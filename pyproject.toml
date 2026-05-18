@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "si_pos"
+version = "0.0.1"
+description = "POS-style Sales Invoice screen for ERPNext"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "ERPNextOman" }
+]
+license = { text = "MIT" }
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["si_pos*"]
+
+[tool.bench.app]
+app_name = "si_pos"
+app_title = "SI POS"
+app_publisher = "ERPNextOman"
+app_description = "POS-style Sales Invoice screen for ERPNext"
+app_email = "support@erpnextoman.com"
+app_license = "MIT"
+required_apps = ["frappe", "erpnext"]
