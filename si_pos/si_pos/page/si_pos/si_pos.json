@@ -1,0 +1,20 @@
+{
+  "doctype": "Page",
+  "name": "si-pos",
+  "page_name": "si-pos",
+  "title": "SI POS",
+  "module": "SI POS",
+  "standard": "Yes",
+  "system_page": 0,
+  "roles": [
+    {
+      "role": "Sales User"
+    },
+    {
+      "role": "Sales Manager"
+    },
+    {
+      "role": "System Manager"
+    }
+  ]
+}
