@@ -1,0 +1,6 @@
+include license.txt
+include README.md
+recursive-include si_pos *.py
+recursive-include si_pos *.js
+recursive-include si_pos *.json
+recursive-include si_pos *.txt
