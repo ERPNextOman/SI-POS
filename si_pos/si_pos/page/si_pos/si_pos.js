@@ -16,7 +16,9 @@ class SIPOSPage {
         this.currency = "OMR";
         this.defaults = {};
         this.search_timer = null;
+        this.preview_timer = null;
         this.created_invoice = null;
+        this.preview = null;
         this.make();
         this.load_defaults();
     }
@@ -51,15 +53,16 @@ class SIPOSPage {
                 .si-cart-line { display:grid; grid-template-columns:1fr 70px 78px 28px; gap:8px; align-items:center; }
                 .si-cart-name { font-weight:850; }
                 .si-cart-code { font-size:11px; color:#94a3b8; margin-top:3px; }
-                .si-cart input, .si-payment-box input { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:10px; padding:7px; width:100%; }
+                .si-cart input, .si-payment-box input, .si-discount-box input { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:10px; padding:7px; width:100%; }
                 .si-remove { border:0; background:#ef4444; color:#fff; border-radius:10px; height:32px; width:32px; font-weight:900; }
-                .si-payment-box { margin-top:14px; padding:14px; border-radius:18px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
+                .si-payment-box, .si-discount-box { margin-top:14px; padding:14px; border-radius:18px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
                 .si-pay-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
                 .si-pay-label { font-size:11px; font-weight:900; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; }
                 .si-payment-box select { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:10px; padding:7px; width:100%; }
                 .si-totals { border-top:1px solid rgba(255,255,255,.12); margin-top:14px; padding-top:14px; }
                 .si-total-line { display:flex; justify-content:space-between; margin:8px 0; color:#cbd5e1; }
                 .si-grand { color:#86efac; font-size:26px; font-weight:950; }
+                .si-tax-note { color:#fbbf24; font-size:12px; font-weight:800; margin-top:6px; }
                 .si-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
                 .si-actions-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:10px; }
                 .si-btn { border:0; border-radius:16px; padding:13px 14px; font-weight:900; }
@@ -74,7 +77,7 @@ class SIPOSPage {
             <div class="si-pos-wrap">
                 <div class="si-pos-head">
                     <div class="si-pos-title">SI POS</div>
-                    <div class="si-pos-sub">POS-style billing screen linked to ERPNext Sales Invoice</div>
+                    <div class="si-pos-sub">Prices are VAT-inclusive. Fixed VAT: 5%</div>
                 </div>
 
                 <div class="si-pos-grid">
@@ -101,9 +104,23 @@ class SIPOSPage {
                         <div class="si-cart">
                             <div class="si-cart-title">
                                 <span>Current Sale</span>
-                                <span class="si-pill">SI POS</span>
+                                <span class="si-pill">VAT Included</span>
                             </div>
                             <div class="si-cart-list"></div>
+
+                            <div class="si-discount-box">
+                                <div class="si-pay-grid">
+                                    <div>
+                                        <div class="si-pay-label">Discount %</div>
+                                        <input class="si-discount-percent" type="number" step="0.001" value="0">
+                                    </div>
+                                    <div>
+                                        <div class="si-pay-label">Discount Amount</div>
+                                        <input class="si-discount-amount" type="number" step="0.001" value="0">
+                                    </div>
+                                </div>
+                                <div class="si-tax-note">Discount is applied on Grand Total. Amount discount has priority over %.</div>
+                            </div>
 
                             <div class="si-payment-box">
                                 <div class="si-pay-grid">
@@ -130,8 +147,11 @@ class SIPOSPage {
 
                             <div class="si-totals">
                                 <div class="si-total-line"><span>Items</span><span class="si-total-items">0</span></div>
-                                <div class="si-total-line"><span>Subtotal</span><span class="si-subtotal">OMR 0.000</span></div>
-                                <div class="si-total-line si-grand"><span>Total</span><span class="si-grand-total">OMR 0.000</span></div>
+                                <div class="si-total-line"><span>Gross Total Incl. VAT</span><span class="si-subtotal">OMR 0.000</span></div>
+                                <div class="si-total-line"><span>Discount</span><span class="si-discount-total">OMR 0.000</span></div>
+                                <div class="si-total-line"><span>VAT 5% Included</span><span class="si-vat-total">OMR 0.000</span></div>
+                                <div class="si-total-line"><span>Rounding</span><span class="si-rounding-total">OMR 0.000</span></div>
+                                <div class="si-total-line si-grand"><span>Payable</span><span class="si-grand-total">OMR 0.000</span></div>
                             </div>
                             <div class="si-actions">
                                 <button class="si-btn si-btn-light si-clear-btn">Clear</button>
@@ -169,6 +189,7 @@ class SIPOSPage {
         this.wrapper.on("click", ".si-submit-pay-print-btn", () => this.submit_pay_and_print());
         this.wrapper.on("click", ".si-open-btn", () => this.open_invoice());
         this.wrapper.on("change keyup", ".si-cash-amount, .si-card-amount", () => this.render_cart());
+        this.wrapper.on("change keyup", ".si-discount-percent, .si-discount-amount", () => this.schedule_preview());
 
         this.wrapper.on("keyup", "input[data-fieldname='search']", (e) => {
             if (e.key === "Enter") return this.search_items();
@@ -186,13 +207,13 @@ class SIPOSPage {
             row.rate = flt(this.wrapper.find(`.si-cart-row[data-idx='${idx}'] .si-rate`).val());
             if (row.qty <= 0) row.qty = 1;
             if (row.rate < 0) row.rate = 0;
-            this.render_cart();
+            this.schedule_preview();
         });
 
         this.wrapper.on("click", ".si-remove", (e) => {
             const idx = cint($(e.currentTarget).closest(".si-cart-row").attr("data-idx"));
             this.cart.splice(idx, 1);
-            this.render_cart();
+            this.schedule_preview();
         });
     }
 
@@ -245,7 +266,7 @@ class SIPOSPage {
             const existing = this.cart.find(row => row.item_code === item.item_code);
             if (existing) existing.qty += 1;
             else this.cart.push({ item_code: item.item_code, item_name: item.item_name, uom: item.uom, qty: 1, rate: flt(item.rate || 0) });
-            this.render_cart();
+            this.schedule_preview();
         } catch (e) {
             frappe.msgprint("Could not add item.");
         }
@@ -253,6 +274,21 @@ class SIPOSPage {
 
     get_subtotal() {
         return this.cart.reduce((sum, row) => sum + (flt(row.qty) * flt(row.rate)), 0);
+    }
+
+    get_discount_args() {
+        const discount_amount = flt(this.wrapper.find(".si-discount-amount").val());
+        const discount_percentage = discount_amount > 0 ? 0 : flt(this.wrapper.find(".si-discount-percent").val());
+        return { discount_amount, discount_percentage };
+    }
+
+    get_payable_total() {
+        if (this.preview && this.preview.payable_total !== undefined) return flt(this.preview.payable_total);
+        const d = this.get_discount_args();
+        let total = this.get_subtotal();
+        if (d.discount_amount > 0) total -= d.discount_amount;
+        else if (d.discount_percentage > 0) total -= total * d.discount_percentage / 100;
+        return Math.max(total, 0);
     }
 
     get_payments() {
@@ -267,11 +303,30 @@ class SIPOSPage {
     }
 
     fill_cash_balance() {
-        const subtotal = this.get_subtotal();
+        const payable = this.get_payable_total();
         const card_amount = flt(this.wrapper.find(".si-card-amount").val());
-        const cash_needed = Math.max(subtotal - card_amount, 0);
+        const cash_needed = Math.max(payable - card_amount, 0);
         this.wrapper.find(".si-cash-amount").val(flt(cash_needed, 3));
         this.render_cart();
+    }
+
+    schedule_preview() {
+        this.render_cart();
+        clearTimeout(this.preview_timer);
+        this.preview_timer = setTimeout(() => this.preview_totals(), 350);
+    }
+
+    async preview_totals() {
+        if (!this.company_field.get_value() || !this.customer_field.get_value() || !this.cart.length) return;
+        try {
+            const args = this.common_args();
+            const r = await frappe.call({ method: "si_pos.api.si_pos.preview_sales_invoice", args });
+            this.preview = r.message || null;
+            this.render_cart();
+        } catch (e) {
+            this.preview = null;
+            this.render_cart();
+        }
     }
 
     render_cart() {
@@ -289,12 +344,20 @@ class SIPOSPage {
             </div>`).join(""));
 
         const total_qty = this.cart.reduce((sum, row) => sum + flt(row.qty), 0);
-        const subtotal = this.get_subtotal();
+        const gross = this.get_subtotal();
+        const payable = this.get_payable_total();
         const paid = this.get_payments().reduce((sum, row) => sum + flt(row.amount), 0);
-        const balance = subtotal - paid;
+        const balance = payable - paid;
+        const discount = this.preview ? flt(this.preview.discount_amount) : Math.max(gross - payable, 0);
+        const vat = this.preview ? flt(this.preview.total_taxes_and_charges) : 0;
+        const rounding = this.preview ? flt(this.preview.rounding_adjustment) : 0;
+
         this.wrapper.find(".si-total-items").text(total_qty);
-        this.wrapper.find(".si-subtotal").text(this.format_currency(subtotal));
-        this.wrapper.find(".si-grand-total").text(this.format_currency(subtotal));
+        this.wrapper.find(".si-subtotal").text(this.format_currency(gross));
+        this.wrapper.find(".si-discount-total").text(this.format_currency(discount));
+        this.wrapper.find(".si-vat-total").text(this.format_currency(vat));
+        this.wrapper.find(".si-rounding-total").text(this.format_currency(rounding));
+        this.wrapper.find(".si-grand-total").text(this.format_currency(payable));
         this.wrapper.find(".si-paid-total").text(this.format_currency(paid));
         this.wrapper.find(".si-balance-total").text(this.format_currency(balance));
     }
@@ -302,7 +365,8 @@ class SIPOSPage {
     clear_cart() {
         this.cart = [];
         this.created_invoice = null;
-        this.wrapper.find(".si-cash-amount, .si-card-amount").val(0);
+        this.preview = null;
+        this.wrapper.find(".si-cash-amount, .si-card-amount, .si-discount-percent, .si-discount-amount").val(0);
         this.render_cart();
     }
 
@@ -314,7 +378,16 @@ class SIPOSPage {
     }
 
     common_args() {
-        return { company: this.company_field.get_value(), customer: this.customer_field.get_value(), price_list: this.price_list_field.get_value(), set_warehouse: this.warehouse_field.get_value(), items: this.cart };
+        const discount = this.get_discount_args();
+        return {
+            company: this.company_field.get_value(),
+            customer: this.customer_field.get_value(),
+            price_list: this.price_list_field.get_value(),
+            set_warehouse: this.warehouse_field.get_value(),
+            items: this.cart,
+            discount_percentage: discount.discount_percentage,
+            discount_amount: discount.discount_amount,
+        };
     }
 
     async create_invoice() {
@@ -323,7 +396,7 @@ class SIPOSPage {
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_sales_invoice", freeze: true, freeze_message: "Creating Draft Sales Invoice...", args: this.common_args() });
             this.created_invoice = r.message;
             frappe.show_alert({ message: `Draft Sales Invoice ${this.created_invoice.name} created`, indicator: "green" });
-        } catch (e) { frappe.msgprint("Draft Sales Invoice creation failed. Check setup and permissions."); }
+        } catch (e) { frappe.msgprint("Draft Sales Invoice creation failed. Check VAT account, setup, and permissions."); }
     }
 
     async submit_and_print() {
@@ -333,23 +406,25 @@ class SIPOSPage {
             this.created_invoice = r.message;
             frappe.show_alert({ message: `Sales Invoice ${this.created_invoice.name} submitted`, indicator: "green" });
             this.open_print();
-        } catch (e) { frappe.msgprint("Submit failed. Check stock, accounts, taxes, and permissions."); }
+        } catch (e) { frappe.msgprint("Submit failed. Check VAT account, stock, accounts, taxes, and permissions."); }
     }
 
     async submit_pay_and_print() {
         if (!this.validate_before_action()) return;
+        await this.preview_totals();
         if (this.get_payments().length === 0) this.fill_cash_balance();
-        const subtotal = this.get_subtotal();
+        const payable = this.get_payable_total();
         const paid = this.get_payments().reduce((sum, row) => sum + flt(row.amount), 0);
-        if (Math.abs(subtotal - paid) > 0.001) return frappe.msgprint("Paid amount must match the cart total before Submit Pay & Print.");
+        if (Math.abs(payable - paid) > 0.001) return frappe.msgprint("Paid amount must match the final payable total before Submit Pay & Print.");
         try {
             const args = this.common_args();
             args.payments = this.get_payments();
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_paid_sales_invoice", freeze: true, freeze_message: "Submitting Paid Sales Invoice...", args });
             this.created_invoice = r.message;
-            frappe.show_alert({ message: `Paid Sales Invoice ${this.created_invoice.name} submitted`, indicator: "green" });
+            const pe_text = (this.created_invoice.payment_entries || []).length ? ` Payment Entry: ${(this.created_invoice.payment_entries || []).join(", ")}` : "";
+            frappe.show_alert({ message: `Paid Sales Invoice ${this.created_invoice.name} submitted.${pe_text}`, indicator: "green" });
             this.open_print();
-        } catch (e) { frappe.msgprint("Paid invoice failed. Check Mode of Payment accounts and invoice setup."); }
+        } catch (e) { frappe.msgprint("Paid invoice failed. Check VAT account, Mode of Payment accounts, and invoice setup."); }
     }
 
     open_invoice() {
