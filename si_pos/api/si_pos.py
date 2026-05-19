@@ -21,8 +21,8 @@ COMMON_CASH_NAMES = ["Cash", "Cash Payment"]
 COMMON_CARD_NAMES = ["Card", "Credit Card", "Debit Card", "Bank Card"]
 COMMON_BANK_NAMES = ["Bank Transfer", "Bank", "Online Transfer", "Wire Transfer"]
 
-VAT_RATE = 5.0
-VAT_DESCRIPTION = "VAT 5% Included"
+SETTINGS_DOCTYPE = "SI POS Settings"
+DEFAULT_VAT_RATE = 5.0
 
 
 def _parse_json(value: Any) -> Any:
@@ -50,6 +50,71 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _single_value(fieldname: str, default: Any = None) -> Any:
+    try:
+        if not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
+            return default
+        value = frappe.db.get_single_value(SETTINGS_DOCTYPE, fieldname)
+        return default if value in (None, "") else value
+    except Exception:
+        return default
+
+
+def _get_settings() -> dict[str, Any]:
+    return {
+        "enabled": _single_value("enabled", 1),
+        "default_company": _single_value("default_company"),
+        "default_customer": _single_value("default_customer"),
+        "default_price_list": _single_value("default_price_list"),
+        "default_warehouse": _single_value("default_warehouse"),
+        "default_cash_mode": _single_value("default_cash_mode"),
+        "default_card_mode": _single_value("default_card_mode"),
+        "vat_rate": _single_value("vat_rate", DEFAULT_VAT_RATE),
+        "vat_inclusive": _single_value("vat_inclusive", 1),
+        "default_print_format": _single_value("default_print_format"),
+        "auto_print": _single_value("auto_print", 1),
+        "auto_clear_cart": _single_value("auto_clear_cart", 1),
+    }
+
+
+def _get_default_company(company: str | None = None, settings: dict[str, Any] | None = None) -> str | None:
+    settings = settings or _get_settings()
+    return (
+        _clean_text(company)
+        or _clean_text(settings.get("default_company"))
+        or frappe.defaults.get_user_default("Company")
+        or frappe.defaults.get_global_default("company")
+    )
+
+
+def _get_default_price_list(price_list: str | None = None, settings: dict[str, Any] | None = None) -> str | None:
+    settings = settings or _get_settings()
+    price_list = _clean_text(price_list) or _clean_text(settings.get("default_price_list"))
+    if price_list:
+        return price_list
+
+    selling_settings = frappe.get_single("Selling Settings")
+    return selling_settings.selling_price_list or frappe.db.get_single_value(
+        "Selling Settings", "selling_price_list"
+    )
+
+
+def _get_default_warehouse(warehouse: str | None = None, settings: dict[str, Any] | None = None) -> str | None:
+    settings = settings or _get_settings()
+    return _clean_text(warehouse) or _clean_text(settings.get("default_warehouse"))
+
+
+def _get_vat_rate(settings: dict[str, Any] | None = None) -> float:
+    settings = settings or _get_settings()
+    rate = _safe_float(settings.get("vat_rate"), DEFAULT_VAT_RATE)
+    return rate if rate >= 0 else DEFAULT_VAT_RATE
+
+
+def _is_vat_inclusive(settings: dict[str, Any] | None = None) -> bool:
+    settings = settings or _get_settings()
+    return bool(int(settings.get("vat_inclusive") or 0))
+
+
 def _item_search_fields() -> list[str]:
     meta = frappe.get_meta("Item")
     existing = {d.fieldname for d in meta.fields}
@@ -66,25 +131,6 @@ def _tokenize_search_text(txt: str) -> list[str]:
         return []
     tokens = [t.strip() for t in re.split(r"\s+", txt) if t.strip()]
     return tokens[:6]
-
-
-def _get_default_company(company: str | None = None) -> str | None:
-    return (
-        _clean_text(company)
-        or frappe.defaults.get_user_default("Company")
-        or frappe.defaults.get_global_default("company")
-    )
-
-
-def _get_default_price_list(price_list: str | None = None) -> str | None:
-    price_list = _clean_text(price_list)
-    if price_list:
-        return price_list
-
-    selling_settings = frappe.get_single("Selling Settings")
-    return selling_settings.selling_price_list or frappe.db.get_single_value(
-        "Selling Settings", "selling_price_list"
-    )
 
 
 def _get_item_price(item_code: str, price_list: str | None = None, uom: str | None = None) -> float:
@@ -125,15 +171,16 @@ def _get_stock_qty(item_code: str, warehouse: str | None = None) -> float | None
     return float(qty or 0)
 
 
-def _validate_header(customer: str, company: str | None) -> tuple[str, str]:
-    customer = _clean_text(customer)
+def _validate_header(customer: str, company: str | None, settings: dict[str, Any] | None = None) -> tuple[str, str]:
+    settings = settings or _get_settings()
+    customer = _clean_text(customer) or _clean_text(settings.get("default_customer"))
     if not customer:
         frappe.throw(_("Customer is required."))
 
     if not frappe.db.exists("Customer", customer):
         frappe.throw(_("Customer {0} does not exist.").format(customer))
 
-    company = _get_default_company(company)
+    company = _get_default_company(company, settings=settings)
     if not company:
         frappe.throw(_("Company is required. Please select a company."))
 
@@ -143,7 +190,7 @@ def _validate_header(customer: str, company: str | None) -> tuple[str, str]:
     return customer, company
 
 
-def _get_inclusive_vat_template_rows(company: str) -> list[dict[str, Any]]:
+def _get_vat_template_rows(company: str, vat_rate: float, inclusive: bool) -> list[dict[str, Any]]:
     rows = frappe.db.sql(
         """
         SELECT
@@ -159,12 +206,12 @@ def _get_inclusive_vat_template_rows(company: str) -> list[dict[str, Any]]:
         WHERE ifnull(stct.disabled, 0) = 0
           AND (stct.company = %(company)s OR ifnull(stct.company, '') = '')
           AND stc.charge_type = 'On Net Total'
-          AND ifnull(stc.included_in_print_rate, 0) = 1
+          AND ifnull(stc.included_in_print_rate, 0) = %(included)s
           AND ABS(ifnull(stc.rate, 0) - %(vat_rate)s) < 0.0001
         ORDER BY ifnull(stct.is_default, 0) DESC, stct.modified DESC, stc.idx ASC
         LIMIT 5
         """,
-        {"company": company, "vat_rate": VAT_RATE},
+        {"company": company, "vat_rate": vat_rate, "included": 1 if inclusive else 0},
         as_dict=True,
     )
 
@@ -213,20 +260,21 @@ def _get_default_vat_account(company: str) -> str:
 
     frappe.throw(
         _(
-            "Could not find a VAT account for company {0}. Please create an Output VAT / Sales Tax account or an inclusive 5% Sales Taxes and Charges Template."
+            "Could not find a VAT account for company {0}. Please create an Output VAT / Sales Tax account or a VAT Sales Taxes and Charges Template."
         ).format(company)
     )
 
 
-def _apply_inclusive_vat(invoice, company: str) -> None:
-    """Add fixed 5% inclusive VAT.
+def _apply_vat(invoice, company: str, settings: dict[str, Any] | None = None) -> None:
+    settings = settings or _get_settings()
+    vat_rate = _get_vat_rate(settings)
+    if vat_rate <= 0:
+        return
 
-    Item rates in SI POS are treated as VAT-inclusive. Example: rate 100 means
-    customer pays 100 and VAT is extracted from that amount.
-    """
+    inclusive = _is_vat_inclusive(settings)
     invoice.set("taxes", [])
 
-    template_rows = _get_inclusive_vat_template_rows(company)
+    template_rows = _get_vat_template_rows(company, vat_rate, inclusive)
     if template_rows:
         invoice.taxes_and_charges = template_rows[0].template
         for row in template_rows:
@@ -235,9 +283,9 @@ def _apply_inclusive_vat(invoice, company: str) -> None:
                 {
                     "charge_type": row.charge_type,
                     "account_head": row.account_head,
-                    "description": row.description or VAT_DESCRIPTION,
-                    "rate": row.rate or VAT_RATE,
-                    "included_in_print_rate": 1,
+                    "description": row.description or f"VAT {vat_rate}%" + (" Included" if inclusive else ""),
+                    "rate": row.rate or vat_rate,
+                    "included_in_print_rate": 1 if inclusive else 0,
                     "cost_center": row.cost_center,
                 },
             )
@@ -249,9 +297,9 @@ def _apply_inclusive_vat(invoice, company: str) -> None:
         {
             "charge_type": "On Net Total",
             "account_head": vat_account,
-            "description": VAT_DESCRIPTION,
-            "rate": VAT_RATE,
-            "included_in_print_rate": 1,
+            "description": f"VAT {vat_rate}%" + (" Included" if inclusive else ""),
+            "rate": vat_rate,
+            "included_in_print_rate": 1 if inclusive else 0,
         },
     )
 
@@ -273,6 +321,10 @@ def _apply_discount(invoice, discount_percentage: Any = 0, discount_amount: Any 
         invoice.discount_amount = 0
 
 
+def _item_updates_stock(item_code: str) -> bool:
+    return bool(frappe.db.get_value("Item", item_code, "is_stock_item"))
+
+
 def _build_sales_invoice(
     customer: str,
     items: str | list[dict[str, Any]],
@@ -282,8 +334,10 @@ def _build_sales_invoice(
     discount_percentage: Any = 0,
     discount_amount: Any = 0,
 ):
-    customer, company = _validate_header(customer, company)
-    price_list = _get_default_price_list(price_list)
+    settings = _get_settings()
+    customer, company = _validate_header(customer, company, settings=settings)
+    price_list = _get_default_price_list(price_list, settings=settings)
+    selected_warehouse = _get_default_warehouse(set_warehouse, settings=settings)
     cart_items = _parse_json(items) or []
 
     if not isinstance(cart_items, list) or not cart_items:
@@ -296,8 +350,9 @@ def _build_sales_invoice(
     if price_list:
         invoice.selling_price_list = price_list
 
-    if _clean_text(set_warehouse):
-        invoice.set_warehouse = _clean_text(set_warehouse)
+    has_stock_item = False
+    if selected_warehouse:
+        invoice.set_warehouse = selected_warehouse
 
     for row in cart_items:
         item_code = _clean_text(row.get("item_code"))
@@ -314,12 +369,22 @@ def _build_sales_invoice(
         if not frappe.db.exists("Item", item_code):
             frappe.throw(_("Item {0} does not exist.").format(item_code))
 
+        if _item_updates_stock(item_code):
+            has_stock_item = True
+
         item_row = {"item_code": item_code, "qty": qty, "rate": rate}
         if uom:
             item_row["uom"] = uom
+        if selected_warehouse:
+            item_row["warehouse"] = selected_warehouse
         invoice.append("items", item_row)
 
-    _apply_inclusive_vat(invoice, company)
+    # POS-style Sales Invoice must deduct stock on submit. Draft invoices do not
+    # change stock until submitted, but the flag must be set before submit.
+    if selected_warehouse and has_stock_item:
+        invoice.update_stock = 1
+
+    _apply_vat(invoice, company, settings=settings)
     _apply_discount(invoice, discount_percentage=discount_percentage, discount_amount=discount_amount)
     return invoice
 
@@ -368,6 +433,7 @@ def _preview_response(invoice) -> dict[str, Any]:
         "rounding_adjustment": flt(rounded_total - grand_total, precision),
         "payable_total": flt(rounded_total, precision),
         "taxes": _tax_rows(invoice),
+        "update_stock": invoice.get("update_stock"),
     }
 
 
@@ -379,6 +445,7 @@ def _invoice_response(invoice, payment_entries: list[str] | None = None) -> dict
         "rounded_total": invoice.rounded_total,
         "outstanding_amount": invoice.outstanding_amount,
         "currency": invoice.currency,
+        "update_stock": invoice.get("update_stock"),
         "payment_entries": payment_entries or [],
         "route": f"/app/sales-invoice/{invoice.name}",
         "print_route": f"/app/print/Sales%20Invoice/{invoice.name}",
@@ -513,18 +580,24 @@ def get_defaults() -> dict[str, Any]:
     if not frappe.has_permission("Sales Invoice", "create"):
         frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
 
-    company = _get_default_company()
+    settings = _get_settings()
+    company = _get_default_company(settings=settings)
     modes = get_payment_modes(company=company) if company else []
 
     return {
         "company": company,
-        "price_list": _get_default_price_list(),
+        "customer": _clean_text(settings.get("default_customer")),
+        "price_list": _get_default_price_list(settings=settings),
+        "warehouse": _get_default_warehouse(settings=settings),
         "currency": frappe.defaults.get_global_default("currency") or "OMR",
-        "vat_rate": VAT_RATE,
-        "vat_inclusive": 1,
+        "vat_rate": _get_vat_rate(settings),
+        "vat_inclusive": 1 if _is_vat_inclusive(settings) else 0,
+        "default_print_format": _clean_text(settings.get("default_print_format")),
+        "auto_print": int(settings.get("auto_print") or 0),
+        "auto_clear_cart": int(settings.get("auto_clear_cart") or 0),
         "payment_modes": modes,
-        "cash_mode": _pick_mode(modes, COMMON_CASH_NAMES, "Cash"),
-        "card_mode": _pick_mode(modes, COMMON_CARD_NAMES, "Card"),
+        "cash_mode": _clean_text(settings.get("default_cash_mode")) or _pick_mode(modes, COMMON_CASH_NAMES, "Cash"),
+        "card_mode": _clean_text(settings.get("default_card_mode")) or _pick_mode(modes, COMMON_CARD_NAMES, "Card"),
         "bank_mode": _pick_mode(modes, COMMON_BANK_NAMES, "Bank"),
     }
 
@@ -572,10 +645,12 @@ def search_items(
     if not frappe.has_permission("Item", "read"):
         frappe.throw(_("You do not have permission to read Item."), frappe.PermissionError)
 
+    settings = _get_settings()
     limit = _safe_int(limit, default=20, maximum=50)
     txt = _clean_text(txt)
     tokens = _tokenize_search_text(txt)
-    price_list = _get_default_price_list(price_list)
+    price_list = _get_default_price_list(price_list, settings=settings)
+    warehouse = _get_default_warehouse(warehouse, settings=settings)
 
     if not tokens:
         return []
@@ -646,6 +721,7 @@ def get_item_details(
     if not frappe.has_permission("Item", "read"):
         frappe.throw(_("You do not have permission to read Item."), frappe.PermissionError)
 
+    settings = _get_settings()
     item = frappe.get_cached_doc("Item", item_code)
     if item.disabled:
         frappe.throw(_("Item {0} is disabled.").format(item_code))
@@ -653,7 +729,8 @@ def get_item_details(
     if item.get("is_sales_item") == 0:
         frappe.throw(_("Item {0} is not marked as a sales item.").format(item_code))
 
-    price_list = _get_default_price_list(price_list)
+    price_list = _get_default_price_list(price_list, settings=settings)
+    warehouse = _get_default_warehouse(warehouse, settings=settings)
     uom = item.sales_uom or item.stock_uom
     rate = _get_item_price(item_code, price_list=price_list, uom=uom)
 
@@ -762,7 +839,6 @@ def create_paid_sales_invoice(
     if not frappe.has_permission("Sales Invoice", "create"):
         frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
 
-    customer, company = _validate_header(customer, company)
     invoice = _build_sales_invoice(
         customer,
         items,
@@ -775,7 +851,7 @@ def create_paid_sales_invoice(
 
     _calculate_invoice(invoice)
     target_total = _invoice_total(invoice)
-    cleaned_payments = _normalise_payments(payments, company)
+    cleaned_payments = _normalise_payments(payments, invoice.company)
 
     if not cleaned_payments:
         frappe.throw(_("Please enter at least one payment amount."))
