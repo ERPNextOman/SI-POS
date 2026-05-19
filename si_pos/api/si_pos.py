@@ -3,7 +3,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, nowdate
 
 
 DEFAULT_SEARCH_FIELDS = [
@@ -199,7 +199,7 @@ def _invoice_total(invoice) -> float:
     return flt(total, invoice.precision("grand_total") or 3)
 
 
-def _invoice_response(invoice) -> dict[str, Any]:
+def _invoice_response(invoice, payment_entries: list[str] | None = None) -> dict[str, Any]:
     return {
         "name": invoice.name,
         "docstatus": invoice.docstatus,
@@ -207,6 +207,7 @@ def _invoice_response(invoice) -> dict[str, Any]:
         "rounded_total": invoice.rounded_total,
         "outstanding_amount": invoice.outstanding_amount,
         "currency": invoice.currency,
+        "payment_entries": payment_entries or [],
         "route": f"/app/sales-invoice/{invoice.name}",
         "print_route": f"/app/print/Sales%20Invoice/{invoice.name}",
     }
@@ -266,6 +267,64 @@ def _normalise_payments(payments: str | list[dict[str, Any]], company: str) -> l
         )
 
     return cleaned
+
+
+def _create_payment_entries(invoice, payments: list[dict[str, Any]]) -> list[str]:
+    """Create one submitted Payment Entry per payment row.
+
+    This intentionally does not use Sales Invoice POS payment rows. The user wants
+    actual Payment Entry documents for Cash/Card/Mixed payments.
+    """
+    if not frappe.has_permission("Payment Entry", "create"):
+        frappe.throw(_("You do not have permission to create Payment Entry."), frappe.PermissionError)
+
+    payment_entries = []
+    precision = invoice.precision("grand_total") or 3
+    invoice_total = _invoice_total(invoice)
+
+    for row in payments:
+        invoice.reload()
+        outstanding_amount = flt(invoice.outstanding_amount, precision)
+        amount = flt(row["amount"], precision)
+
+        if outstanding_amount <= 0:
+            break
+
+        allocated_amount = min(amount, outstanding_amount)
+
+        payment_entry = frappe.new_doc("Payment Entry")
+        payment_entry.payment_type = "Receive"
+        payment_entry.company = invoice.company
+        payment_entry.posting_date = nowdate()
+        payment_entry.mode_of_payment = row["mode_of_payment"]
+        payment_entry.party_type = "Customer"
+        payment_entry.party = invoice.customer
+        payment_entry.party_name = invoice.customer_name
+        payment_entry.paid_from = invoice.debit_to
+        payment_entry.paid_to = row["account"]
+        payment_entry.paid_amount = allocated_amount
+        payment_entry.received_amount = allocated_amount
+        payment_entry.reference_no = f"SI-POS-{invoice.name}"
+        payment_entry.reference_date = nowdate()
+        payment_entry.remarks = f"SI POS payment for Sales Invoice {invoice.name}"
+
+        payment_entry.append(
+            "references",
+            {
+                "reference_doctype": "Sales Invoice",
+                "reference_name": invoice.name,
+                "total_amount": invoice_total,
+                "outstanding_amount": outstanding_amount,
+                "allocated_amount": allocated_amount,
+            },
+        )
+
+        payment_entry.insert()
+        payment_entry.submit()
+        payment_entries.append(payment_entry.name)
+
+    invoice.reload()
+    return payment_entries
 
 
 def _pick_mode(modes: list[dict[str, Any]], names: list[str], mode_type: str | None = None) -> str | None:
@@ -484,7 +543,7 @@ def create_paid_sales_invoice(
     price_list: str | None = None,
     set_warehouse: str | None = None,
 ) -> dict[str, Any]:
-    """Create, mark as POS paid, and submit a Sales Invoice.
+    """Create a submitted Sales Invoice and real Payment Entry document(s).
 
     Payments can contain one or many rows:
     [{"mode_of_payment": "Cash", "amount": 10.0}]
@@ -494,7 +553,6 @@ def create_paid_sales_invoice(
 
     customer, company = _validate_header(customer, company)
     invoice = _build_sales_invoice(customer, items, company, price_list, set_warehouse)
-    invoice.is_pos = 1
 
     _calculate_invoice(invoice)
     target_total = _invoice_total(invoice)
@@ -514,16 +572,10 @@ def create_paid_sales_invoice(
             )
         )
 
-    for row in cleaned_payments:
-        invoice.append(
-            "payments",
-            {
-                "mode_of_payment": row["mode_of_payment"],
-                "amount": row["amount"],
-                "account": row["account"],
-            },
-        )
-
     invoice.insert()
     invoice.submit()
-    return _invoice_response(invoice)
+
+    payment_entries = _create_payment_entries(invoice, cleaned_payments)
+    invoice.reload()
+
+    return _invoice_response(invoice, payment_entries=payment_entries)
