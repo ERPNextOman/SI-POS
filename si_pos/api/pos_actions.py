@@ -8,6 +8,14 @@ from frappe import _
 from frappe.utils import flt, getdate, nowdate
 
 
+def _safe_int(value: Any, default: int = 100, minimum: int = 1, maximum: int = 500) -> int:
+    try:
+        value = int(value or default)
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 @frappe.whitelist()
 def quick_create_customer(
     customer_name: str,
@@ -144,4 +152,116 @@ def get_cashier_daily_closing(
         "mode_totals": dict(mode_totals),
         "invoices": invoices,
         "payment_entries": payment_entries,
+    }
+
+
+@frappe.whitelist()
+def get_created_sales_invoices(
+    company: str | None = None,
+    customer: str | None = None,
+    posting_date: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Return Sales Invoices created by the current cashier/user.
+
+    This is meant for the SI POS quick view button. System Manager can later be
+    extended to view all cashiers, but normal users see their own invoices.
+    """
+    if not frappe.has_permission("Sales Invoice", "read"):
+        frappe.throw(_("You do not have permission to read Sales Invoice."), frappe.PermissionError)
+
+    filters: dict[str, Any] = {
+        "owner": frappe.session.user,
+    }
+    if company:
+        filters["company"] = company
+    if customer:
+        filters["customer"] = customer
+    if posting_date:
+        filters["posting_date"] = getdate(posting_date)
+
+    rows = frappe.get_all(
+        "Sales Invoice",
+        filters=filters,
+        fields=[
+            "name",
+            "docstatus",
+            "customer",
+            "customer_name",
+            "company",
+            "posting_date",
+            "posting_time",
+            "grand_total",
+            "rounded_total",
+            "outstanding_amount",
+            "is_return",
+            "return_against",
+            "creation",
+        ],
+        order_by="creation desc",
+        limit_page_length=_safe_int(limit, default=100, maximum=300),
+    )
+
+    total = sum(flt(row.rounded_total or row.grand_total) for row in rows)
+    outstanding = sum(flt(row.outstanding_amount) for row in rows)
+
+    return {
+        "count": len(rows),
+        "total": total,
+        "outstanding": outstanding,
+        "invoices": rows,
+    }
+
+
+@frappe.whitelist()
+def get_available_stock(warehouse: str, txt: str | None = None, limit: int = 200) -> dict[str, Any]:
+    """Return available stock rows for selected warehouse."""
+    if not frappe.has_permission("Item", "read"):
+        frappe.throw(_("You do not have permission to read Item."), frappe.PermissionError)
+
+    warehouse = (warehouse or "").strip()
+    if not warehouse:
+        frappe.throw(_("Please select a warehouse first."))
+
+    if not frappe.db.exists("Warehouse", warehouse):
+        frappe.throw(_("Warehouse {0} does not exist.").format(warehouse))
+
+    txt = (txt or "").strip()
+    params = {"warehouse": warehouse, "limit": _safe_int(limit, default=200, maximum=500)}
+    conditions = ["b.warehouse = %(warehouse)s", "ifnull(b.actual_qty, 0) > 0", "ifnull(i.disabled, 0) = 0"]
+
+    if txt:
+        params["txt"] = f"%{txt}%"
+        conditions.append("(i.item_code LIKE %(txt)s OR i.item_name LIKE %(txt)s OR i.description LIKE %(txt)s)")
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT
+            i.item_code,
+            i.item_name,
+            i.stock_uom,
+            i.item_group,
+            b.actual_qty,
+            b.reserved_qty,
+            b.projected_qty,
+            (ifnull(b.actual_qty, 0) - ifnull(b.reserved_qty, 0)) AS available_qty
+        FROM `tabBin` b
+        INNER JOIN `tabItem` i ON i.name = b.item_code
+        WHERE {' AND '.join(conditions)}
+        ORDER BY i.item_code ASC
+        LIMIT %(limit)s
+        """,
+        params,
+        as_dict=True,
+    )
+
+    total_actual_qty = sum(flt(row.actual_qty) for row in rows)
+    total_available_qty = sum(flt(row.available_qty) for row in rows)
+
+    return {
+        "warehouse": warehouse,
+        "count": len(rows),
+        "total_actual_qty": total_actual_qty,
+        "total_available_qty": total_available_qty,
+        "items": rows,
     }
