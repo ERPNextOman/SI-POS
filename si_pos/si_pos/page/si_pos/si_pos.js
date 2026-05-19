@@ -19,6 +19,7 @@ class SIPOSPage {
         this.search_timer = null;
         this.preview_timer = null;
         this.created_invoice = null;
+        this.last_invoice = null;
         this.preview = null;
         this.prepare_page_layout();
         this.make();
@@ -93,10 +94,18 @@ class SIPOSPage {
                 .si-pay-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
                 .si-pay-label { font-size:10px; font-weight:900; color:#cbd5e1; margin-bottom:4px; text-transform:uppercase; }
                 .si-payment-box select { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:9px; padding:6px 7px; width:100%; height:32px; }
+                .si-pay-quick { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+                .si-quick-btn { border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.10); color:#fff; border-radius:10px; padding:7px 8px; font-size:11px; font-weight:900; }
+                .si-quick-btn:hover { background:rgba(255,255,255,.18); }
                 .si-totals { border-top:1px solid rgba(255,255,255,.12); margin-top:10px; padding-top:10px; }
                 .si-total-line { display:flex; justify-content:space-between; margin:6px 0; color:#cbd5e1; font-size:13px; }
                 .si-grand { color:#86efac; font-size:22px; font-weight:950; }
                 .si-tax-note { color:#fbbf24; font-size:11px; font-weight:800; margin-top:5px; line-height:1.3; }
+                .si-success-box { display:none; margin-top:10px; padding:10px; border-radius:14px; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.35); }
+                .si-success-title { color:#86efac; font-size:12px; font-weight:900; margin-bottom:6px; }
+                .si-success-content { color:#d1fae5; font-size:12px; line-height:1.45; }
+                .si-success-content a { color:#93c5fd; font-weight:900; text-decoration:none; }
+                .si-success-content a:hover { text-decoration:underline; }
                 .si-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
                 .si-actions-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; }
                 .si-btn { border:0; border-radius:13px; padding:10px 10px; font-weight:900; font-size:12px; min-height:42px; }
@@ -107,7 +116,7 @@ class SIPOSPage {
                 .si-empty { padding:18px; text-align:center; color:#94a3b8; border:1px dashed #334155; border-radius:14px; }
                 @media (max-width: 1300px) { .si-results { grid-template-columns:repeat(3,1fr); } }
                 @media (max-width: 1100px) { .si-pos-grid { grid-template-columns:1fr; } .si-results { grid-template-columns:repeat(3,1fr); } .si-field-grid { grid-template-columns:repeat(2,1fr); } }
-                @media (max-width: 700px) { .si-results, .si-field-grid, .si-pay-grid, .si-actions, .si-actions-3 { grid-template-columns:1fr; } }
+                @media (max-width: 700px) { .si-results, .si-field-grid, .si-pay-grid, .si-actions, .si-actions-3, .si-pay-quick { grid-template-columns:1fr; } }
             </style>
             <div class="si-pos-wrap">
                 <div class="si-pos-head">
@@ -176,6 +185,10 @@ class SIPOSPage {
                                         <input class="si-card-amount" type="number" step="0.001" value="0">
                                     </div>
                                 </div>
+                                <div class="si-pay-quick">
+                                    <button class="si-quick-btn si-full-cash-btn">Full Cash</button>
+                                    <button class="si-quick-btn si-full-card-btn">Full Card</button>
+                                </div>
                                 <div class="si-total-line" style="margin-top:8px;"><span>Paid</span><span class="si-paid-total">OMR 0.000</span></div>
                                 <div class="si-total-line"><span>Balance</span><span class="si-balance-total">OMR 0.000</span></div>
                             </div>
@@ -195,6 +208,10 @@ class SIPOSPage {
                                 <button class="si-btn si-btn-blue si-submit-print-btn">Submit & Print</button>
                                 <button class="si-btn si-btn-purple si-submit-pay-print-btn">Submit Pay & Print</button>
                                 <button class="si-btn si-btn-light si-open-btn">Open SI</button>
+                            </div>
+                            <div class="si-success-box">
+                                <div class="si-success-title">Last Transaction</div>
+                                <div class="si-success-content"></div>
                             </div>
                         </div>
                     </div>
@@ -222,6 +239,8 @@ class SIPOSPage {
         this.wrapper.on("click", ".si-submit-print-btn", () => this.submit_and_print());
         this.wrapper.on("click", ".si-submit-pay-print-btn", () => this.submit_pay_and_print());
         this.wrapper.on("click", ".si-open-btn", () => this.open_invoice());
+        this.wrapper.on("click", ".si-full-cash-btn", () => this.full_cash());
+        this.wrapper.on("click", ".si-full-card-btn", () => this.full_card());
         this.wrapper.on("change keyup", ".si-cash-amount, .si-card-amount", () => this.render_cart());
         this.wrapper.on("change keyup", ".si-discount-percent, .si-discount-amount", () => this.schedule_preview());
 
@@ -336,6 +355,20 @@ class SIPOSPage {
         return payments;
     }
 
+    full_cash() {
+        const payable = this.get_payable_total();
+        this.wrapper.find(".si-card-amount").val(0);
+        this.wrapper.find(".si-cash-amount").val(flt(payable, 3));
+        this.render_cart();
+    }
+
+    full_card() {
+        const payable = this.get_payable_total();
+        this.wrapper.find(".si-cash-amount").val(0);
+        this.wrapper.find(".si-card-amount").val(flt(payable, 3));
+        this.render_cart();
+    }
+
     fill_cash_balance() {
         const payable = this.get_payable_total();
         let card_amount = flt(this.wrapper.find(".si-card-amount").val());
@@ -408,6 +441,32 @@ class SIPOSPage {
         this.render_cart();
     }
 
+    reset_sale_inputs_after_success() {
+        this.cart = [];
+        this.preview = null;
+        this.wrapper.find(".si-cash-amount, .si-card-amount, .si-discount-percent, .si-discount-amount").val(0);
+        this.render_cart();
+    }
+
+    show_success_result(result, status_label) {
+        this.created_invoice = result;
+        this.last_invoice = result;
+
+        const invoice_name = frappe.utils.escape_html(result.name || "");
+        const invoice_link = result.name ? `<a href="/app/sales-invoice/${encodeURIComponent(result.name)}" target="_blank">${invoice_name}</a>` : "";
+        const payment_links = (result.payment_entries || []).map((pe) => {
+            const safe_pe = frappe.utils.escape_html(pe);
+            return `<a href="/app/payment-entry/${encodeURIComponent(pe)}" target="_blank">${safe_pe}</a>`;
+        }).join(", ");
+
+        let html = `<div>${frappe.utils.escape_html(status_label)}: ${invoice_link}</div>`;
+        if (payment_links) html += `<div>Payment Entry: ${payment_links}</div>`;
+        html += `<div style="margin-top:4px; color:#a7f3d0;">Ready for next bill.</div>`;
+
+        this.wrapper.find(".si-success-content").html(html);
+        this.wrapper.find(".si-success-box").show();
+    }
+
     validate_before_action() {
         if (!this.company_field.get_value()) { frappe.msgprint("Please select Company."); return false; }
         if (!this.customer_field.get_value()) { frappe.msgprint("Please select Customer."); return false; }
@@ -432,7 +491,7 @@ class SIPOSPage {
         if (!this.validate_before_action()) return;
         try {
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_sales_invoice", freeze: true, freeze_message: "Creating Draft Sales Invoice...", args: this.common_args() });
-            this.created_invoice = r.message;
+            this.show_success_result(r.message, "Draft Sales Invoice created");
             frappe.show_alert({ message: `Draft Sales Invoice ${this.created_invoice.name} created`, indicator: "green" });
         } catch (e) { frappe.msgprint("Draft Sales Invoice creation failed. Check VAT account, setup, and permissions."); }
     }
@@ -441,9 +500,10 @@ class SIPOSPage {
         if (!this.validate_before_action()) return;
         try {
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_and_submit_sales_invoice", freeze: true, freeze_message: "Submitting Sales Invoice...", args: this.common_args() });
-            this.created_invoice = r.message;
+            this.show_success_result(r.message, "Sales Invoice submitted");
             frappe.show_alert({ message: `Sales Invoice ${this.created_invoice.name} submitted`, indicator: "green" });
             this.open_print();
+            this.reset_sale_inputs_after_success();
         } catch (e) { frappe.msgprint("Submit failed. Check VAT account, stock, accounts, taxes, and permissions."); }
     }
 
@@ -459,21 +519,24 @@ class SIPOSPage {
             const args = this.common_args();
             args.payments = this.get_payments();
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_paid_sales_invoice", freeze: true, freeze_message: "Submitting Paid Sales Invoice...", args });
-            this.created_invoice = r.message;
+            this.show_success_result(r.message, "Paid Sales Invoice submitted");
             const pe_text = (this.created_invoice.payment_entries || []).length ? ` Payment Entry: ${(this.created_invoice.payment_entries || []).join(", ")}` : "";
             frappe.show_alert({ message: `Paid Sales Invoice ${this.created_invoice.name} submitted.${pe_text}`, indicator: "green" });
             this.open_print();
+            this.reset_sale_inputs_after_success();
         } catch (e) { frappe.msgprint("Paid invoice failed. Check VAT account, Mode of Payment accounts, and invoice setup."); }
     }
 
     open_invoice() {
-        if (this.created_invoice && this.created_invoice.name) frappe.set_route("Form", "Sales Invoice", this.created_invoice.name);
+        const target = this.created_invoice || this.last_invoice;
+        if (target && target.name) frappe.set_route("Form", "Sales Invoice", target.name);
         else frappe.msgprint("No invoice created yet.");
     }
 
     open_print() {
-        if (!this.created_invoice || !this.created_invoice.name) return;
-        const url = `/app/print/Sales%20Invoice/${encodeURIComponent(this.created_invoice.name)}`;
+        const target = this.created_invoice || this.last_invoice;
+        if (!target || !target.name) return;
+        const url = `/app/print/Sales%20Invoice/${encodeURIComponent(target.name)}`;
         window.open(url, "_blank");
     }
 
