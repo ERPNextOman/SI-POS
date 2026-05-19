@@ -1,6 +1,6 @@
 (function () {
-    if (window.__si_pos_cash_shift_v1_loaded) return;
-    window.__si_pos_cash_shift_v1_loaded = true;
+    if (window.__si_pos_cash_shift_v2_loaded) return;
+    window.__si_pos_cash_shift_v2_loaded = true;
 
     const DENOMS = [50, 20, 10, 5, 1, 0.5, 0.1, 0.05];
     const WAIT_MS = 700;
@@ -26,6 +26,37 @@
 
     function money(value) {
         return format_currency(value || 0, frappe.defaults.get_default('currency') || 'OMR');
+    }
+
+    function button_html(cls, label) {
+        return `<button class="btn btn-light ${cls}" style="height:32px; border-radius:9px; font-weight:900;">${label}</button>`;
+    }
+
+    function ensure_shift_buttons() {
+        if (!is_pos_page() || !$('.si-pos-head').length) return false;
+
+        let controls = $('.si-pos-extra-controls');
+        if (!controls.length) {
+            $('.si-pos-head').append('<div class="si-pos-extra-controls"></div>');
+            controls = $('.si-pos-extra-controls');
+        }
+
+        controls.css({
+            marginTop: '8px',
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            flexWrap: 'wrap'
+        });
+
+        if (!controls.find('.si-shift-start-btn').length) {
+            if (controls.find('.si-extra-customer-btn').length) controls.find('.si-extra-customer-btn').after(button_html('si-shift-start-btn', 'Shift Start'));
+            else controls.prepend(button_html('si-shift-start-btn', 'Shift Start'));
+        }
+
+        controls.find('.si-extra-closing-btn').text('Shift Close');
+        return true;
     }
 
     function denom_table(prefix) {
@@ -68,20 +99,38 @@
         return total;
     }
 
-    async function ensure_open_shift() {
-        if (!is_pos_page()) return;
+    async function refresh_open_shift_status() {
+        if (!is_pos_page()) return null;
         const c = company();
         const w = warehouse();
-        if (!c || !w) return;
+        if (!c || !w) return null;
 
         try {
             const r = await frappe.call({ method: 'si_pos.api.cash_shift.get_open_shift', args: { company: c, warehouse: w } });
             const data = r.message || {};
             window.si_pos_cash_shift = data;
-            if (data.needs_shift) show_opening_dialog(c, w);
+            return data;
         } catch (e) {
-            // Do not block POS if app is not migrated yet.
+            return null;
         }
+    }
+
+    async function start_shift_from_button() {
+        const c = company();
+        const w = warehouse();
+        if (!c) return frappe.msgprint('Please select Company first.');
+        if (!w) return frappe.msgprint('Please select Warehouse first.');
+
+        const data = await refresh_open_shift_status();
+        if (data && data.exists && data.name) {
+            frappe.msgprint({
+                title: 'Shift Already Open',
+                indicator: 'blue',
+                message: `Open Cash Shift: <a href="/app/si-pos-cash-shift/${encodeURIComponent(data.name)}" target="_blank">${frappe.utils.escape_html(data.name)}</a><br>Opening Balance: <b>${money(data.opening_amount || 0)}</b>`
+            });
+            return;
+        }
+        show_opening_dialog(c, w);
     }
 
     function show_opening_dialog(c, w) {
@@ -89,7 +138,7 @@
         window.__si_pos_opening_dialog_visible = true;
 
         const d = new frappe.ui.Dialog({
-            title: 'Start POS - Opening Balance',
+            title: 'Shift Start - Opening Balance',
             size: 'large',
             fields: [
                 { fieldtype: 'HTML', fieldname: 'info', options: `<div class="alert alert-warning">Enter opening cash denomination before starting POS for warehouse <b>${frappe.utils.escape_html(w)}</b>.</div>` },
@@ -117,7 +166,7 @@
         });
         d.show();
         d.$wrapper.on('input', '.si-denom-qty', () => refresh_denoms(d.$wrapper));
-        d.$wrapper.find('.modal-header .close').hide();
+        d.$wrapper.on('hidden.bs.modal', () => { window.__si_pos_opening_dialog_visible = false; });
     }
 
     async function get_closing_data() {
@@ -146,6 +195,7 @@
                     });
                     const res = r.message || {};
                     frappe.msgprint({ title: 'Shift Closed', indicator: 'green', message: `Cash Shift <a href="/app/si-pos-cash-shift/${encodeURIComponent(res.name)}" target="_blank">${frappe.utils.escape_html(res.name)}</a> closed.<br>Difference: <b>${money(res.difference || 0)}</b>` });
+                    await refresh_open_shift_status();
                     d.hide();
                 } catch (e) {
                     frappe.msgprint('Could not close shift. Check if an open shift exists.');
@@ -156,7 +206,8 @@
         d.$wrapper.on('input', '.si-denom-qty', () => refresh_denoms(d.$wrapper));
     }
 
-    function patch_closing_button() {
+    function bind_shift_buttons() {
+        $(document).off('click.si_shift_start').on('click.si_shift_start', '.si-shift-start-btn', start_shift_from_button);
         $(document).off('click.si_shift_close').on('click.si_shift_close', '.si-closing-denom-btn', async function () {
             const data = await get_closing_data();
             show_closing_denom_dialog(data);
@@ -167,11 +218,12 @@
         let tries = 0;
         const timer = setInterval(() => {
             if (is_pos_page()) {
-                ensure_open_shift();
-                patch_closing_button();
+                ensure_shift_buttons();
+                bind_shift_buttons();
+                refresh_open_shift_status();
             }
             tries += 1;
-            if (tries >= MAX_TRIES) clearInterval(timer);
+            if (tries >= MAX_TRIES || ($('.si-shift-start-btn').length && $('.si-extra-closing-btn').text().trim() === 'Shift Close')) clearInterval(timer);
         }, WAIT_MS);
     }
 
