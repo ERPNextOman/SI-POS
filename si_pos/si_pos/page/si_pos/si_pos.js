@@ -150,7 +150,6 @@ class SIPOSPage {
                                 <div class="si-total-line"><span>Gross Total Incl. VAT</span><span class="si-subtotal">OMR 0.000</span></div>
                                 <div class="si-total-line"><span>Discount</span><span class="si-discount-total">OMR 0.000</span></div>
                                 <div class="si-total-line"><span>VAT 5% Included</span><span class="si-vat-total">OMR 0.000</span></div>
-                                <div class="si-total-line"><span>Rounding</span><span class="si-rounding-total">OMR 0.000</span></div>
                                 <div class="si-total-line si-grand"><span>Payable</span><span class="si-grand-total">OMR 0.000</span></div>
                             </div>
                             <div class="si-actions">
@@ -304,7 +303,13 @@ class SIPOSPage {
 
     fill_cash_balance() {
         const payable = this.get_payable_total();
-        const card_amount = flt(this.wrapper.find(".si-card-amount").val());
+        let card_amount = flt(this.wrapper.find(".si-card-amount").val());
+
+        if (card_amount > payable) {
+            card_amount = payable;
+            this.wrapper.find(".si-card-amount").val(flt(card_amount, 3));
+        }
+
         const cash_needed = Math.max(payable - card_amount, 0);
         this.wrapper.find(".si-cash-amount").val(flt(cash_needed, 3));
         this.render_cart();
@@ -350,13 +355,11 @@ class SIPOSPage {
         const balance = payable - paid;
         const discount = this.preview ? flt(this.preview.discount_amount) : Math.max(gross - payable, 0);
         const vat = this.preview ? flt(this.preview.total_taxes_and_charges) : 0;
-        const rounding = this.preview ? flt(this.preview.rounding_adjustment) : 0;
 
         this.wrapper.find(".si-total-items").text(total_qty);
         this.wrapper.find(".si-subtotal").text(this.format_currency(gross));
         this.wrapper.find(".si-discount-total").text(this.format_currency(discount));
         this.wrapper.find(".si-vat-total").text(this.format_currency(vat));
-        this.wrapper.find(".si-rounding-total").text(this.format_currency(rounding));
         this.wrapper.find(".si-grand-total").text(this.format_currency(payable));
         this.wrapper.find(".si-paid-total").text(this.format_currency(paid));
         this.wrapper.find(".si-balance-total").text(this.format_currency(balance));
@@ -412,10 +415,14 @@ class SIPOSPage {
     async submit_pay_and_print() {
         if (!this.validate_before_action()) return;
         await this.preview_totals();
-        if (this.get_payments().length === 0) this.fill_cash_balance();
+
+        // Always auto-match cash/card to the final payable total before submit.
+        // This prevents the blocking popup when the user enters less than payable.
+        this.fill_cash_balance();
+
         const payable = this.get_payable_total();
         const paid = this.get_payments().reduce((sum, row) => sum + flt(row.amount), 0);
-        if (Math.abs(payable - paid) > 0.001) return frappe.msgprint("Paid amount must match the final payable total before Submit Pay & Print.");
+        if (Math.abs(payable - paid) > 0.001) return frappe.msgprint("Payment amount could not be matched to final payable total. Please check Cash/Card amount.");
         try {
             const args = this.common_args();
             args.payments = this.get_payments();
