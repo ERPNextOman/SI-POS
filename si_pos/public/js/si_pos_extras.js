@@ -31,55 +31,43 @@
         };
     }
 
+    function hide_top_vat_text() {
+        if (!is_si_pos_page()) return;
+        if (!document.getElementById('si-pos-hide-vat-subtitle-style')) {
+            $('head').append(`
+                <style id="si-pos-hide-vat-subtitle-style">
+                    .si-pos-sub { display: none !important; }
+                    .si-pos-extra-controls { justify-content: flex-end; }
+                </style>
+            `);
+        }
+        $('.si-pos-sub').hide();
+    }
+
     function add_controls() {
         if (!is_si_pos_page()) return;
         if ($('.si-pos-extra-controls').length) return;
         if (!$('.si-pos-head').length) return;
 
+        hide_top_vat_text();
+
         $('.si-pos-head').append(`
-            <div class="si-pos-extra-controls" style="margin-top:10px; display:grid; grid-template-columns: minmax(180px, 280px) auto auto; gap:8px; align-items:end;">
-                <div>
-                    <div style="font-size:10px; font-weight:900; opacity:.85; text-transform:uppercase; margin-bottom:4px;">Print Format</div>
-                    <select class="si-extra-print-format" style="height:32px; border:0; border-radius:9px; padding:5px 8px; color:#111827; width:100%;"></select>
-                </div>
+            <div class="si-pos-extra-controls" style="margin-top:8px; display:flex; gap:8px; align-items:center; justify-content:flex-end;">
                 <button class="btn btn-light si-extra-customer-btn" style="height:32px; border-radius:9px; font-weight:900;">+ Customer</button>
                 <button class="btn btn-light si-extra-closing-btn" style="height:32px; border-radius:9px; font-weight:900;">Daily Closing</button>
             </div>
         `);
 
-        load_print_formats();
+        load_pos_config();
         bind_extra_events();
     }
 
-    async function load_print_formats() {
+    async function load_pos_config() {
         try {
-            const r = await frappe.call({
-                method: 'frappe.client.get_list',
-                args: {
-                    doctype: 'Print Format',
-                    filters: { doc_type: 'Sales Invoice', disabled: 0 },
-                    fields: ['name'],
-                    limit_page_length: 100,
-                    order_by: 'name asc'
-                }
-            });
-            const rows = r.message || [];
-            let html = `<option value="">Default</option>`;
-            rows.forEach(row => {
-                const name = frappe.utils.escape_html(row.name);
-                html += `<option value="${name}">${name}</option>`;
-            });
-            $('.si-extra-print-format').html(html);
-
-            try {
-                const cfg = await frappe.call({ method: 'si_pos.api.pos_config.get_pos_config' });
-                if (cfg.message && cfg.message.default_print_format) {
-                    $('.si-extra-print-format').val(cfg.message.default_print_format);
-                }
-                window.si_pos_extra_config = cfg.message || {};
-            } catch (e) {}
+            const cfg = await frappe.call({ method: 'si_pos.api.pos_config.get_pos_config' });
+            window.si_pos_extra_config = cfg.message || {};
         } catch (e) {
-            $('.si-extra-print-format').html(`<option value="">Default</option>`);
+            window.si_pos_extra_config = {};
         }
     }
 
@@ -93,14 +81,13 @@
         if (!inst || inst.__si_pos_extra_patched) return;
         inst.__si_pos_extra_patched = true;
 
-        const original_open_print = inst.open_print.bind(inst);
         inst.open_print = function () {
             const target = this.created_invoice || this.last_invoice;
             if (!target || !target.name) return;
 
-            const pf = $('.si-extra-print-format').val();
+            const pf = (this.pos_config && this.pos_config.default_print_format) || (this.defaults && this.defaults.default_print_format) || '';
             let url = `/app/print/Sales%20Invoice/${encodeURIComponent(target.name)}`;
-            if (pf) url += `?format=${encodeURIComponent(pf)}`;
+            if (pf) url += `?print_format=${encodeURIComponent(pf)}&format=${encodeURIComponent(pf)}`;
             window.open(url, '_blank');
         };
     }
@@ -149,23 +136,24 @@
                 freeze_message: 'Loading daily closing...'
             });
             const data = r.message || {};
+            const currency = frappe.defaults.get_default('currency') || 'OMR';
             const modeRows = Object.entries(data.mode_totals || {}).map(([mode, amount]) => `
-                <tr><td>${frappe.utils.escape_html(mode)}</td><td style="text-align:right; font-weight:900;">${format_currency(amount, frappe.defaults.get_default('currency') || 'OMR')}</td></tr>
+                <tr><td>${frappe.utils.escape_html(mode)}</td><td style="text-align:right; font-weight:900;">${format_currency(amount, currency)}</td></tr>
             `).join('') || `<tr><td colspan="2" class="text-muted">No payment entries found</td></tr>`;
 
             const invoiceRows = (data.invoices || []).slice(-20).reverse().map(inv => `
                 <tr>
                     <td><a href="/app/sales-invoice/${encodeURIComponent(inv.name)}" target="_blank">${frappe.utils.escape_html(inv.name)}</a></td>
                     <td>${frappe.utils.escape_html(inv.customer_name || inv.customer || '')}</td>
-                    <td style="text-align:right;">${format_currency(inv.rounded_total || inv.grand_total, frappe.defaults.get_default('currency') || 'OMR')}</td>
+                    <td style="text-align:right;">${format_currency(inv.rounded_total || inv.grand_total, currency)}</td>
                 </tr>
             `).join('') || `<tr><td colspan="3" class="text-muted">No invoices today</td></tr>`;
 
             const html = `
                 <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:12px;">
                     <div class="frappe-card" style="padding:12px;"><div class="text-muted">Invoices</div><div style="font-size:22px; font-weight:900;">${data.invoice_count || 0}</div></div>
-                    <div class="frappe-card" style="padding:12px;"><div class="text-muted">Invoice Total</div><div style="font-size:22px; font-weight:900;">${format_currency(data.invoice_total || 0, frappe.defaults.get_default('currency') || 'OMR')}</div></div>
-                    <div class="frappe-card" style="padding:12px;"><div class="text-muted">Paid Total</div><div style="font-size:22px; font-weight:900;">${format_currency(data.paid_total || 0, frappe.defaults.get_default('currency') || 'OMR')}</div></div>
+                    <div class="frappe-card" style="padding:12px;"><div class="text-muted">Invoice Total</div><div style="font-size:22px; font-weight:900;">${format_currency(data.invoice_total || 0, currency)}</div></div>
+                    <div class="frappe-card" style="padding:12px;"><div class="text-muted">Paid Total</div><div style="font-size:22px; font-weight:900;">${format_currency(data.paid_total || 0, currency)}</div></div>
                 </div>
                 <h5>Payment Mode Totals</h5>
                 <table class="table table-bordered"><tbody>${modeRows}</tbody></table>
@@ -194,6 +182,7 @@
         const timer = setInterval(() => {
             if (!is_si_pos_page()) return;
             install_instance_marker();
+            hide_top_vat_text();
             add_controls();
             patch_print_behavior();
             tries += 1;
