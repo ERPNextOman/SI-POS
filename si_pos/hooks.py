@@ -12,6 +12,7 @@ app_include_js = [
     "/assets/si_pos/js/si_pos_cash_tools_v1.js",
     "/assets/si_pos/js/si_pos_cash_shift_v2.js",
     "/assets/si_pos/js/si_pos_shift_guard_v2.js",
+    "/assets/si_pos/js/si_pos_shift_lock_v1.js",
     "/assets/si_pos/js/si_pos_closing_v2.js",
     "/assets/si_pos/js/si_pos_closing_v3.js",
     "/assets/si_pos/js/si_pos_print_patch.js",
