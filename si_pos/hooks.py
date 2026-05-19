@@ -6,11 +6,12 @@ app_email = "support@erpnextoman.com"
 app_license = "MIT"
 required_apps = ["frappe", "erpnext"]
 
-# Extra Desk JS adds optional POS UI helpers such as print format selector,
-# quick customer creation, daily closing dialog, print format routing,
+# Extra Desk JS adds optional POS UI helpers such as customer creation,
+# sales invoice list, available stock, daily closing, print routing,
 # barcode scan, stock warning, and return/exchange flow.
 app_include_js = [
     "/assets/si_pos/js/si_pos_extras.js",
+    "/assets/si_pos/js/si_pos_header_tools_v2.js",
     "/assets/si_pos/js/si_pos_print_patch.js",
     "/assets/si_pos/js/si_pos_phase4.js",
     "/assets/si_pos/js/si_pos_phase5.js",
