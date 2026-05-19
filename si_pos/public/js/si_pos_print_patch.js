@@ -1,6 +1,6 @@
 (function () {
-    if (window.__si_pos_print_patch_installed) return;
-    window.__si_pos_print_patch_installed = true;
+    if (window.__si_pos_print_patch_installed_v2) return;
+    window.__si_pos_print_patch_installed_v2 = true;
 
     const originalOpen = window.open;
 
@@ -9,7 +9,11 @@
     }
 
     function selectedPrintFormat() {
-        const value = $('.si-extra-print-format').val();
+        const fromDropdown = $('.si-extra-print-format').val();
+        const fromInstance = window.si_pos_current_instance && window.si_pos_current_instance.selected_print_format
+            ? window.si_pos_current_instance.selected_print_format()
+            : '';
+        const value = fromDropdown || fromInstance || '';
         return value ? String(value).trim() : '';
     }
 
@@ -19,13 +23,15 @@
     }
 
     function addPrintFormat(url) {
-        const format = selectedPrintFormat();
-        if (!format) return url;
+        const printFormat = selectedPrintFormat();
+        if (!printFormat) return url;
 
-        const separator = url.includes('?') ? '&' : '?';
-        if (url.includes('format=')) return url;
+        let cleanUrl = url.replace(/([?&])(format|print_format)=[^&]*/g, '');
+        cleanUrl = cleanUrl.replace('?&', '?').replace(/\?$/, '').replace(/&$/, '');
+        const separator = cleanUrl.includes('?') ? '&' : '?';
 
-        return `${url}${separator}format=${encodeURIComponent(format)}`;
+        // ERPNext print view commonly uses print_format. Keep format too for compatibility.
+        return `${cleanUrl}${separator}print_format=${encodeURIComponent(printFormat)}&format=${encodeURIComponent(printFormat)}`;
     }
 
     window.open = function (url, target, features) {
