@@ -16,11 +16,17 @@ class SIPOSPage {
         this.cart = [];
         this.currency = "OMR";
         this.defaults = {};
+        this.pos_config = {};
         this.search_timer = null;
         this.preview_timer = null;
         this.created_invoice = null;
         this.last_invoice = null;
         this.preview = null;
+        this.storage_key = "si_pos_held_carts_v1";
+
+        window.si_pos_current_instance = this;
+        try { this.wrapper.closest(".page-wrapper").data("si_pos_instance", this); } catch (e) {}
+
         this.prepare_page_layout();
         this.make();
         this.load_defaults();
@@ -94,7 +100,7 @@ class SIPOSPage {
                 .si-pay-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
                 .si-pay-label { font-size:10px; font-weight:900; color:#cbd5e1; margin-bottom:4px; text-transform:uppercase; }
                 .si-payment-box select { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:9px; padding:6px 7px; width:100%; height:32px; }
-                .si-pay-quick { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+                .si-pay-quick, .si-hold-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
                 .si-quick-btn { border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.10); color:#fff; border-radius:10px; padding:7px 8px; font-size:11px; font-weight:900; }
                 .si-quick-btn:hover { background:rgba(255,255,255,.18); }
                 .si-totals { border-top:1px solid rgba(255,255,255,.12); margin-top:10px; padding-top:10px; }
@@ -114,9 +120,10 @@ class SIPOSPage {
                 .si-btn-purple { background:linear-gradient(90deg,#9333ea,#db2777); color:#fff; }
                 .si-btn-light { background:#e2e8f0; color:#0f172a; }
                 .si-empty { padding:18px; text-align:center; color:#94a3b8; border:1px dashed #334155; border-radius:14px; }
+                .si-held-row { display:grid; grid-template-columns:1fr auto auto; gap:8px; align-items:center; padding:10px; border:1px solid #e5e7eb; border-radius:10px; margin-bottom:8px; }
                 @media (max-width: 1300px) { .si-results { grid-template-columns:repeat(3,1fr); } }
                 @media (max-width: 1100px) { .si-pos-grid { grid-template-columns:1fr; } .si-results { grid-template-columns:repeat(3,1fr); } .si-field-grid { grid-template-columns:repeat(2,1fr); } }
-                @media (max-width: 700px) { .si-results, .si-field-grid, .si-pay-grid, .si-actions, .si-actions-3, .si-pay-quick { grid-template-columns:1fr; } }
+                @media (max-width: 700px) { .si-results, .si-field-grid, .si-pay-grid, .si-actions, .si-actions-3, .si-pay-quick, .si-hold-grid { grid-template-columns:1fr; } }
             </style>
             <div class="si-pos-wrap">
                 <div class="si-pos-head">
@@ -197,8 +204,12 @@ class SIPOSPage {
                                 <div class="si-total-line"><span>Items</span><span class="si-total-items">0</span></div>
                                 <div class="si-total-line"><span>Gross Total Incl. VAT</span><span class="si-subtotal">OMR 0.000</span></div>
                                 <div class="si-total-line"><span>Discount</span><span class="si-discount-total">OMR 0.000</span></div>
-                                <div class="si-total-line"><span>VAT 5% Included</span><span class="si-vat-total">OMR 0.000</span></div>
+                                <div class="si-total-line"><span>VAT <span class="si-vat-rate-label">5</span>% Included</span><span class="si-vat-total">OMR 0.000</span></div>
                                 <div class="si-total-line si-grand"><span>Payable</span><span class="si-grand-total">OMR 0.000</span></div>
+                            </div>
+                            <div class="si-hold-grid">
+                                <button class="si-quick-btn si-hold-btn">Hold Cart</button>
+                                <button class="si-quick-btn si-resume-btn">Resume Cart</button>
                             </div>
                             <div class="si-actions">
                                 <button class="si-btn si-btn-light si-clear-btn">Clear</button>
@@ -241,6 +252,8 @@ class SIPOSPage {
         this.wrapper.on("click", ".si-open-btn", () => this.open_invoice());
         this.wrapper.on("click", ".si-full-cash-btn", () => this.full_cash());
         this.wrapper.on("click", ".si-full-card-btn", () => this.full_card());
+        this.wrapper.on("click", ".si-hold-btn", () => this.hold_cart());
+        this.wrapper.on("click", ".si-resume-btn", () => this.show_resume_dialog());
         this.wrapper.on("change keyup", ".si-cash-amount, .si-card-amount", () => this.render_cart());
         this.wrapper.on("change keyup", ".si-discount-percent, .si-discount-amount", () => this.schedule_preview());
 
@@ -272,23 +285,53 @@ class SIPOSPage {
 
     async load_defaults() {
         try {
-            const r = await frappe.call({ method: "si_pos.api.si_pos.get_defaults" });
-            this.defaults = r.message || {};
+            const [defaults_response, config_response] = await Promise.all([
+                frappe.call({ method: "si_pos.api.si_pos.get_defaults" }),
+                frappe.call({ method: "si_pos.api.pos_config.get_pos_config" }).catch(() => ({ message: {} })),
+            ]);
+
+            this.defaults = defaults_response.message || {};
+            this.pos_config = config_response.message || {};
             this.currency = this.defaults.currency || "OMR";
-            if (this.defaults.company) this.company_field.set_value(this.defaults.company);
-            if (this.defaults.price_list) this.price_list_field.set_value(this.defaults.price_list);
+
+            const company = this.pos_config.default_company || this.defaults.company;
+            const customer = this.pos_config.default_customer || this.defaults.customer;
+            const price_list = this.pos_config.default_price_list || this.defaults.price_list;
+            const warehouse = this.pos_config.default_warehouse || this.defaults.warehouse;
+
+            if (company) this.company_field.set_value(company);
+            if (customer) this.customer_field.set_value(customer);
+            if (price_list) this.price_list_field.set_value(price_list);
+            if (warehouse) this.warehouse_field.set_value(warehouse);
+
             this.render_payment_modes(this.defaults.payment_modes || []);
+            this.apply_pos_settings_to_ui();
             this.render_cart();
         } catch (e) {
             frappe.msgprint("Unable to load SI POS defaults. Check Sales Invoice permissions.");
         }
     }
 
+    apply_pos_settings_to_ui() {
+        const vat_rate = flt(this.pos_config.vat_rate || this.defaults.vat_rate || 5);
+        const inclusive = cint(this.pos_config.vat_inclusive !== undefined ? this.pos_config.vat_inclusive : this.defaults.vat_inclusive);
+        this.wrapper.find(".si-vat-rate-label").text(format_number(vat_rate, null, 2).replace(/\.00$/, ""));
+        this.wrapper.find(".si-pos-sub").text(`Prices are ${inclusive ? "VAT-inclusive" : "VAT-exclusive"}. VAT: ${format_number(vat_rate, null, 2).replace(/\.00$/, "")}%`);
+
+        const default_pf = this.pos_config.default_print_format || this.defaults.default_print_format;
+        if (default_pf) {
+            setTimeout(() => $(".si-extra-print-format").val(default_pf), 700);
+        }
+    }
+
     render_payment_modes(modes) {
         const options = (modes || []).map(m => `<option value="${frappe.utils.escape_html(m.name)}">${frappe.utils.escape_html(m.name)}</option>`).join("");
         this.wrapper.find(".si-cash-mode, .si-card-mode").html(options);
-        if (this.defaults.cash_mode) this.wrapper.find(".si-cash-mode").val(this.defaults.cash_mode);
-        if (this.defaults.card_mode) this.wrapper.find(".si-card-mode").val(this.defaults.card_mode);
+
+        const cash_mode = this.pos_config.default_cash_mode || this.defaults.cash_mode;
+        const card_mode = this.pos_config.default_card_mode || this.defaults.card_mode;
+        if (cash_mode) this.wrapper.find(".si-cash-mode").val(cash_mode);
+        if (card_mode) this.wrapper.find(".si-card-mode").val(card_mode);
     }
 
     async search_items() {
@@ -372,12 +415,10 @@ class SIPOSPage {
     fill_cash_balance() {
         const payable = this.get_payable_total();
         let card_amount = flt(this.wrapper.find(".si-card-amount").val());
-
         if (card_amount > payable) {
             card_amount = payable;
             this.wrapper.find(".si-card-amount").val(flt(card_amount, 3));
         }
-
         const cash_needed = Math.max(payable - card_amount, 0);
         this.wrapper.find(".si-cash-amount").val(flt(cash_needed, 3));
         this.render_cart();
@@ -448,6 +489,14 @@ class SIPOSPage {
         this.render_cart();
     }
 
+    should_auto_print() {
+        return cint(this.pos_config.auto_print === undefined ? 1 : this.pos_config.auto_print) === 1;
+    }
+
+    should_auto_clear_cart() {
+        return cint(this.pos_config.auto_clear_cart === undefined ? 1 : this.pos_config.auto_clear_cart) === 1;
+    }
+
     show_success_result(result, status_label) {
         this.created_invoice = result;
         this.last_invoice = result;
@@ -461,7 +510,7 @@ class SIPOSPage {
 
         let html = `<div>${frappe.utils.escape_html(status_label)}: ${invoice_link}</div>`;
         if (payment_links) html += `<div>Payment Entry: ${payment_links}</div>`;
-        html += `<div style="margin-top:4px; color:#a7f3d0;">Ready for next bill.</div>`;
+        html += `<div style="margin-top:4px; color:#a7f3d0;">${this.should_auto_clear_cart() ? "Ready for next bill." : "Cart is kept because Auto Clear Cart is off."}</div>`;
 
         this.wrapper.find(".si-success-content").html(html);
         this.wrapper.find(".si-success-box").show();
@@ -502,8 +551,8 @@ class SIPOSPage {
             const r = await frappe.call({ method: "si_pos.api.si_pos.create_and_submit_sales_invoice", freeze: true, freeze_message: "Submitting Sales Invoice...", args: this.common_args() });
             this.show_success_result(r.message, "Sales Invoice submitted");
             frappe.show_alert({ message: `Sales Invoice ${this.created_invoice.name} submitted`, indicator: "green" });
-            this.open_print();
-            this.reset_sale_inputs_after_success();
+            if (this.should_auto_print()) this.open_print();
+            if (this.should_auto_clear_cart()) this.reset_sale_inputs_after_success();
         } catch (e) { frappe.msgprint("Submit failed. Check VAT account, stock, accounts, taxes, and permissions."); }
     }
 
@@ -522,8 +571,8 @@ class SIPOSPage {
             this.show_success_result(r.message, "Paid Sales Invoice submitted");
             const pe_text = (this.created_invoice.payment_entries || []).length ? ` Payment Entry: ${(this.created_invoice.payment_entries || []).join(", ")}` : "";
             frappe.show_alert({ message: `Paid Sales Invoice ${this.created_invoice.name} submitted.${pe_text}`, indicator: "green" });
-            this.open_print();
-            this.reset_sale_inputs_after_success();
+            if (this.should_auto_print()) this.open_print();
+            if (this.should_auto_clear_cart()) this.reset_sale_inputs_after_success();
         } catch (e) { frappe.msgprint("Paid invoice failed. Check VAT account, Mode of Payment accounts, and invoice setup."); }
     }
 
@@ -533,14 +582,113 @@ class SIPOSPage {
         else frappe.msgprint("No invoice created yet.");
     }
 
+    selected_print_format() {
+        return $(".si-extra-print-format").val() || this.pos_config.default_print_format || this.defaults.default_print_format || "";
+    }
+
     open_print() {
         const target = this.created_invoice || this.last_invoice;
         if (!target || !target.name) return;
-        const url = `/app/print/Sales%20Invoice/${encodeURIComponent(target.name)}`;
+        let url = `/app/print/Sales%20Invoice/${encodeURIComponent(target.name)}`;
+        const pf = this.selected_print_format();
+        if (pf) url += `?format=${encodeURIComponent(pf)}`;
         window.open(url, "_blank");
     }
 
     format_currency(value) {
         return `${this.currency} ${format_number(flt(value), null, 3)}`;
+    }
+
+    get_held_carts() {
+        try { return JSON.parse(localStorage.getItem(this.storage_key) || "[]"); }
+        catch (e) { return []; }
+    }
+
+    save_held_carts(rows) {
+        localStorage.setItem(this.storage_key, JSON.stringify(rows || []));
+    }
+
+    hold_cart() {
+        if (!this.cart.length) return frappe.msgprint("Cart is empty. Add items before holding.");
+
+        const held = this.get_held_carts();
+        const d = this.get_discount_args();
+        const entry = {
+            id: String(Date.now()),
+            created_at: frappe.datetime.now_datetime(),
+            customer: this.customer_field.get_value(),
+            company: this.company_field.get_value(),
+            price_list: this.price_list_field.get_value(),
+            warehouse: this.warehouse_field.get_value(),
+            cart: this.cart,
+            discount_percentage: d.discount_percentage,
+            discount_amount: d.discount_amount,
+            cash_amount: flt(this.wrapper.find(".si-cash-amount").val()),
+            card_amount: flt(this.wrapper.find(".si-card-amount").val()),
+            total: this.get_payable_total(),
+        };
+        held.unshift(entry);
+        this.save_held_carts(held.slice(0, 30));
+        this.clear_cart();
+        frappe.show_alert({ message: "Cart held successfully", indicator: "green" });
+    }
+
+    show_resume_dialog() {
+        const rows = this.get_held_carts();
+        if (!rows.length) return frappe.msgprint("No held carts found.");
+
+        const body = rows.map(row => `
+            <div class="si-held-row" data-id="${frappe.utils.escape_html(row.id)}">
+                <div>
+                    <div style="font-weight:900;">${frappe.utils.escape_html(row.customer || "No Customer")}</div>
+                    <div class="text-muted">${frappe.utils.escape_html(row.created_at || "")} | ${frappe.utils.escape_html((row.cart || []).length)} item(s) | ${this.format_currency(row.total || 0)}</div>
+                </div>
+                <button class="btn btn-xs btn-primary si-resume-one" data-id="${frappe.utils.escape_html(row.id)}">Resume</button>
+                <button class="btn btn-xs btn-danger si-delete-held" data-id="${frappe.utils.escape_html(row.id)}">Delete</button>
+            </div>
+        `).join("");
+
+        const d = new frappe.ui.Dialog({
+            title: "Resume Held Cart",
+            size: "large",
+            fields: [{ fieldtype: "HTML", fieldname: "held_html", options: `<div class="si-held-list">${body}</div>` }],
+            primary_action_label: "Close",
+            primary_action: () => d.hide(),
+        });
+        d.show();
+
+        d.$wrapper.off("click.si_hold").on("click.si_hold", ".si-resume-one", (e) => {
+            this.resume_held_cart($(e.currentTarget).attr("data-id"));
+            d.hide();
+        });
+        d.$wrapper.on("click.si_hold", ".si-delete-held", (e) => {
+            this.delete_held_cart($(e.currentTarget).attr("data-id"));
+            $(e.currentTarget).closest(".si-held-row").remove();
+        });
+    }
+
+    resume_held_cart(id) {
+        const rows = this.get_held_carts();
+        const row = rows.find(r => r.id === id);
+        if (!row) return;
+
+        if (row.company) this.company_field.set_value(row.company);
+        if (row.customer) this.customer_field.set_value(row.customer);
+        if (row.price_list) this.price_list_field.set_value(row.price_list);
+        if (row.warehouse) this.warehouse_field.set_value(row.warehouse);
+        this.cart = row.cart || [];
+        this.wrapper.find(".si-discount-percent").val(flt(row.discount_percentage || 0));
+        this.wrapper.find(".si-discount-amount").val(flt(row.discount_amount || 0));
+        this.wrapper.find(".si-cash-amount").val(flt(row.cash_amount || 0));
+        this.wrapper.find(".si-card-amount").val(flt(row.card_amount || 0));
+        this.save_held_carts(rows.filter(r => r.id !== id));
+        this.schedule_preview();
+        frappe.show_alert({ message: "Held cart resumed", indicator: "green" });
+    }
+
+    delete_held_cart(id) {
+        const rows = this.get_held_carts().filter(r => r.id !== id);
+        this.save_held_carts(rows);
+        frappe.show_alert({ message: "Held cart deleted", indicator: "orange" });
     }
 }
