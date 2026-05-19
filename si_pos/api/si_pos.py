@@ -325,6 +325,33 @@ def _item_updates_stock(item_code: str) -> bool:
     return bool(frappe.db.get_value("Item", item_code, "is_stock_item"))
 
 
+def _ensure_open_cash_shift(company: str, warehouse: str | None) -> str | None:
+    """Block SI POS sales unless cashier has an open shift for selected warehouse."""
+    if not frappe.db.exists("DocType", "SI POS Cash Shift"):
+        return None
+
+    warehouse = _clean_text(warehouse)
+    if not warehouse:
+        frappe.throw(_("Please select Warehouse and start POS shift before creating a sale."))
+
+    shift = frappe.db.get_value(
+        "SI POS Cash Shift",
+        {
+            "docstatus": ["<", 2],
+            "status": "Open",
+            "company": company,
+            "warehouse": warehouse,
+            "cashier": frappe.session.user,
+        },
+        "name",
+    )
+
+    if not shift:
+        frappe.throw(_("Opening balance is not added. Please click Shift Start and enter opening denomination before creating a sale."))
+
+    return shift
+
+
 def _build_sales_invoice(
     customer: str,
     items: str | list[dict[str, Any]],
@@ -794,6 +821,7 @@ def create_sales_invoice(
         discount_percentage=discount_percentage,
         discount_amount=discount_amount,
     )
+    _ensure_open_cash_shift(invoice.company, invoice.get("set_warehouse"))
     invoice.insert()
     return _invoice_response(invoice)
 
@@ -820,6 +848,7 @@ def create_and_submit_sales_invoice(
         discount_percentage=discount_percentage,
         discount_amount=discount_amount,
     )
+    _ensure_open_cash_shift(invoice.company, invoice.get("set_warehouse"))
     invoice.insert()
     invoice.submit()
     return _invoice_response(invoice)
@@ -848,6 +877,7 @@ def create_paid_sales_invoice(
         discount_percentage=discount_percentage,
         discount_amount=discount_amount,
     )
+    _ensure_open_cash_shift(invoice.company, invoice.get("set_warehouse"))
 
     _calculate_invoice(invoice)
     target_total = _invoice_total(invoice)
