@@ -1,6 +1,6 @@
 (function () {
-    if (window.__si_pos_header_tools_v2_loaded) return;
-    window.__si_pos_header_tools_v2_loaded = true;
+    if (window.__si_pos_header_tools_v3_loaded) return;
+    window.__si_pos_header_tools_v3_loaded = true;
 
     const WAIT_MS = 500;
     const MAX_TRIES = 120;
@@ -37,10 +37,12 @@
             flexWrap: 'wrap'
         });
 
-        // Remove the old Print Format block if older cached code added it.
         controls.find('.si-extra-print-format').closest('div').remove();
 
         if (!controls.find('.si-extra-customer-btn').length) controls.append(button_html('si-extra-customer-btn', '+ Customer'));
+        if (!controls.find('.si-extra-advance-btn').length) controls.append(button_html('si-extra-advance-btn', 'Advance'));
+        if (!controls.find('.si-extra-expense-btn').length) controls.append(button_html('si-extra-expense-btn', 'Daily Expense'));
+        if (!controls.find('.si-extra-bank-btn').length) controls.append(button_html('si-extra-bank-btn', 'Bank Deposit'));
         if (!controls.find('.si-extra-invoices-btn').length) controls.append(button_html('si-extra-invoices-btn', 'Sales Invoices'));
         if (!controls.find('.si-extra-stock-btn').length) controls.append(button_html('si-extra-stock-btn', 'Available Stock'));
         if (!controls.find('.si-extra-closing-btn').length) controls.append(button_html('si-extra-closing-btn', 'Daily Closing'));
@@ -50,9 +52,35 @@
     }
 
     function bind_events() {
-        $(document).off('click.si_pos_v2_customer').on('click.si_pos_v2_customer', '.si-extra-customer-btn', show_customer_dialog);
-        $(document).off('click.si_pos_v2_invoices').on('click.si_pos_v2_invoices', '.si-extra-invoices-btn', show_created_invoices_dialog);
-        $(document).off('click.si_pos_v2_stock').on('click.si_pos_v2_stock', '.si-extra-stock-btn', show_available_stock_dialog);
+        $(document).off('click.si_pos_v3_customer').on('click.si_pos_v3_customer', '.si-extra-customer-btn', show_customer_dialog);
+        $(document).off('click.si_pos_v3_advance').on('click.si_pos_v3_advance', '.si-extra-advance-btn', show_advance_dialog);
+        $(document).off('click.si_pos_v3_expense').on('click.si_pos_v3_expense', '.si-extra-expense-btn', show_expense_dialog);
+        $(document).off('click.si_pos_v3_bank').on('click.si_pos_v3_bank', '.si-extra-bank-btn', show_bank_deposit_dialog);
+        $(document).off('click.si_pos_v3_invoices').on('click.si_pos_v3_invoices', '.si-extra-invoices-btn', show_created_invoices_dialog);
+        $(document).off('click.si_pos_v3_stock').on('click.si_pos_v3_stock', '.si-extra-stock-btn', show_available_stock_dialog);
+    }
+
+    function current_company() {
+        const inst = get_pos_instance();
+        return inst && inst.company_field ? inst.company_field.get_value() : null;
+    }
+
+    function current_customer() {
+        const inst = get_pos_instance();
+        return inst && inst.customer_field ? inst.customer_field.get_value() : null;
+    }
+
+    function current_warehouse() {
+        const inst = get_pos_instance();
+        return inst && inst.warehouse_field ? inst.warehouse_field.get_value() : null;
+    }
+
+    function current_cash_mode() {
+        return $('.si-cash-mode').val() || null;
+    }
+
+    function current_card_mode() {
+        return $('.si-card-mode').val() || null;
     }
 
     function set_pos_customer(customer_name) {
@@ -88,6 +116,112 @@
                     d.hide();
                 } catch (e) {
                     frappe.msgprint('Customer creation failed. Check Customer permissions and default Customer Group/Territory.');
+                }
+            }
+        });
+        d.show();
+    }
+
+    function show_advance_dialog() {
+        const d = new frappe.ui.Dialog({
+            title: 'Customer Advance',
+            fields: [
+                { fieldtype: 'Link', fieldname: 'customer', label: 'Customer', options: 'Customer', reqd: 1, default: current_customer() },
+                { fieldtype: 'Currency', fieldname: 'amount', label: 'Advance Amount', reqd: 1 },
+                { fieldtype: 'Link', fieldname: 'mode_of_payment', label: 'Mode of Payment', options: 'Mode of Payment', default: current_cash_mode() },
+                { fieldtype: 'Link', fieldname: 'paid_to', label: 'Paid To Account', options: 'Account', description: 'Optional. Leave blank to use Mode of Payment account.' },
+                { fieldtype: 'Data', fieldname: 'reference_no', label: 'Reference No' },
+                { fieldtype: 'Small Text', fieldname: 'remarks', label: 'Remarks' }
+            ],
+            primary_action_label: 'Create Advance',
+            primary_action: async (values) => {
+                try {
+                    const r = await frappe.call({
+                        method: 'si_pos.api.cash_control.create_customer_advance',
+                        args: { ...values, company: current_company() },
+                        freeze: true,
+                        freeze_message: 'Creating customer advance...'
+                    });
+                    const pe = r.message || {};
+                    frappe.msgprint({
+                        title: 'Advance Created',
+                        indicator: 'green',
+                        message: `Payment Entry <a href="/app/payment-entry/${encodeURIComponent(pe.name)}" target="_blank">${frappe.utils.escape_html(pe.name)}</a> created.`
+                    });
+                    d.hide();
+                } catch (e) {
+                    frappe.msgprint('Advance creation failed. Check Mode of Payment account, customer, and Payment Entry permission.');
+                }
+            }
+        });
+        d.show();
+    }
+
+    function show_expense_dialog() {
+        const d = new frappe.ui.Dialog({
+            title: 'Daily Expense',
+            fields: [
+                { fieldtype: 'Currency', fieldname: 'amount', label: 'Amount', reqd: 1 },
+                { fieldtype: 'Data', fieldname: 'purpose', label: 'Purpose', reqd: 1 },
+                { fieldtype: 'Link', fieldname: 'mode_of_payment', label: 'Mode of Payment', options: 'Mode of Payment', default: current_cash_mode() },
+                { fieldtype: 'Link', fieldname: 'paid_from', label: 'Paid From Account', options: 'Account', description: 'Optional. Leave blank to use Mode of Payment account.' },
+                { fieldtype: 'Link', fieldname: 'expense_account', label: 'Expense Account', options: 'Account', description: 'Optional. Leave blank to use default expense account.' },
+                { fieldtype: 'Small Text', fieldname: 'remarks', label: 'Remarks' }
+            ],
+            primary_action_label: 'Create Expense',
+            primary_action: async (values) => {
+                try {
+                    const r = await frappe.call({
+                        method: 'si_pos.api.cash_control.create_daily_expense',
+                        args: { ...values, company: current_company(), warehouse: current_warehouse() },
+                        freeze: true,
+                        freeze_message: 'Creating daily expense...'
+                    });
+                    const doc = r.message || {};
+                    frappe.msgprint({
+                        title: 'Daily Expense Created',
+                        indicator: 'green',
+                        message: `Daily Expense <a href="/app/si-pos-daily-expense/${encodeURIComponent(doc.name)}" target="_blank">${frappe.utils.escape_html(doc.name)}</a> created. Journal Entry: <a href="/app/journal-entry/${encodeURIComponent(doc.journal_entry)}" target="_blank">${frappe.utils.escape_html(doc.journal_entry)}</a>`
+                    });
+                    d.hide();
+                } catch (e) {
+                    frappe.msgprint('Daily Expense creation failed. Check accounts, permissions, and Mode of Payment setup.');
+                }
+            }
+        });
+        d.show();
+    }
+
+    function show_bank_deposit_dialog() {
+        const d = new frappe.ui.Dialog({
+            title: 'Bank Deposit',
+            fields: [
+                { fieldtype: 'Data', fieldname: 'bank_name', label: 'Bank Name', reqd: 1 },
+                { fieldtype: 'Currency', fieldname: 'amount', label: 'Amount', reqd: 1 },
+                { fieldtype: 'Link', fieldname: 'from_mode_of_payment', label: 'From Mode of Payment', options: 'Mode of Payment', default: current_cash_mode() },
+                { fieldtype: 'Link', fieldname: 'from_account', label: 'From Account', options: 'Account', description: 'Optional. Leave blank to use From Mode of Payment account.' },
+                { fieldtype: 'Link', fieldname: 'bank_account', label: 'Bank Account', options: 'Account', description: 'Optional. Leave blank to use first Bank account.' },
+                { fieldtype: 'Data', fieldname: 'reference_no', label: 'Reference No' },
+                { fieldtype: 'Small Text', fieldname: 'remarks', label: 'Remarks' }
+            ],
+            primary_action_label: 'Create Bank Deposit',
+            primary_action: async (values) => {
+                try {
+                    const r = await frappe.call({
+                        method: 'si_pos.api.cash_control.create_bank_deposit',
+                        args: { ...values, company: current_company(), warehouse: current_warehouse() },
+                        freeze: true,
+                        freeze_message: 'Creating bank deposit...'
+                    });
+                    const doc = r.message || {};
+                    frappe.msgprint({
+                        title: 'Bank Deposit Created',
+                        indicator: 'green',
+                        message: `Bank Deposit <a href="/app/si-pos-bank-deposit/${encodeURIComponent(doc.name)}" target="_blank">${frappe.utils.escape_html(doc.name)}</a> created. Journal Entry: <a href="/app/journal-entry/${encodeURIComponent(doc.journal_entry)}" target="_blank">${frappe.utils.escape_html(doc.journal_entry)}</a>`
+                    });
+                    d.hide();
+                } catch (e) {
+                    frappe.msgprint('Bank Deposit creation failed. Check bank/from accounts, permissions, and Mode of Payment setup.');
                 }
             }
         });
@@ -214,7 +348,7 @@
         const timer = setInterval(() => {
             if (is_si_pos_page()) ensure_header();
             tries += 1;
-            if (tries >= MAX_TRIES || ($('.si-extra-invoices-btn').length && $('.si-extra-stock-btn').length)) clearInterval(timer);
+            if (tries >= MAX_TRIES || ($('.si-extra-advance-btn').length && $('.si-extra-expense-btn').length && $('.si-extra-bank-btn').length)) clearInterval(timer);
         }, WAIT_MS);
     }
 
