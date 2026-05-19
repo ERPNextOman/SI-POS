@@ -29,6 +29,31 @@ def _sum_by_mode(rows: list[dict[str, Any]], mode_field: str, amount_field: str)
     return dict(totals)
 
 
+def _get_open_cash_shift(company: str | None, warehouse: str | None, cashier: str):
+    if not company or not warehouse or not frappe.db.exists("DocType", "SI POS Cash Shift"):
+        return None
+    name = frappe.db.get_value(
+        "SI POS Cash Shift",
+        {
+            "docstatus": ["<", 2],
+            "status": "Open",
+            "company": company,
+            "warehouse": warehouse,
+            "cashier": cashier,
+        },
+        "name",
+    )
+    if not name:
+        return None
+    doc = frappe.get_doc("SI POS Cash Shift", name)
+    return {
+        "name": doc.name,
+        "opening_amount": flt(doc.opening_amount),
+        "opening_datetime": doc.opening_datetime,
+        "status": doc.status,
+    }
+
+
 @frappe.whitelist()
 def quick_create_customer(
     customer_name: str,
@@ -79,6 +104,7 @@ def quick_create_customer(
 def get_cashier_daily_closing(
     posting_date: str | None = None,
     company: str | None = None,
+    warehouse: str | None = None,
     cashier: str | None = None,
 ) -> dict[str, Any]:
     """Return a cashier-wise same-day closing summary for SI POS."""
@@ -112,6 +138,7 @@ def get_cashier_daily_closing(
             "outstanding_amount",
             "posting_time",
             "is_return",
+            "discount_amount",
         ],
         order_by="creation asc",
         limit_page_length=1000,
@@ -144,16 +171,22 @@ def get_cashier_daily_closing(
             mode_totals[pe.mode_of_payment or "Unspecified"] += flt(pe.paid_amount)
 
     invoice_total = 0.0
+    sales_net_total = 0.0
     sales_total = 0.0
     return_total = 0.0
+    discount_total = 0.0
     outstanding_total = 0.0
+
     for row in invoices:
         value = flt(row.rounded_total or row.grand_total)
+        discount = flt(row.discount_amount)
         invoice_total += value
         if row.get("is_return"):
             return_total += abs(value)
         else:
-            sales_total += value
+            sales_net_total += value
+            discount_total += discount
+            sales_total += value + discount
         outstanding_total += flt(row.outstanding_amount)
 
     paid_total = sum(mode_totals.values())
@@ -191,6 +224,8 @@ def get_cashier_daily_closing(
     }
     if company:
         expense_filters["company"] = company
+    if warehouse:
+        expense_filters["warehouse"] = warehouse
 
     expenses = frappe.get_all(
         "SI POS Daily Expense",
@@ -211,6 +246,8 @@ def get_cashier_daily_closing(
     }
     if company:
         deposit_filters["company"] = company
+    if warehouse:
+        deposit_filters["warehouse"] = warehouse
 
     deposits = frappe.get_all(
         "SI POS Bank Deposit",
@@ -224,16 +261,32 @@ def get_cashier_daily_closing(
     deposit_total = sum(deposit_mode_totals.values())
     cash_deposit_total = sum(amount for mode, amount in deposit_mode_totals.items() if _is_cash_mode(mode))
 
+    shift = _get_open_cash_shift(company, warehouse, cashier)
+    opening_balance = flt(shift.get("opening_amount")) if shift else 0.0
+
+    # Section 1 requested formula:
+    # opening balance + total sales + total advance received - daily expenses - discount - bank deposit
+    available_till_balance = opening_balance + sales_total + advance_total - expense_total - discount_total - deposit_total
+
+    # Section 2 requested formula:
+    # opening balance + cash sales
+    till_available_balance = opening_balance + cash_sales_total
+
     expected_cash = cash_sales_total + cash_advance_total - cash_expense_total - cash_deposit_total
 
     return {
         "posting_date": str(posting_date),
         "company": company,
+        "warehouse": warehouse,
         "cashier": cashier,
+        "cash_shift": shift,
+        "opening_balance": opening_balance,
         "invoice_count": len(invoices),
         "invoice_total": invoice_total,
         "sales_total": sales_total,
+        "sales_net_total": sales_net_total,
         "return_total": return_total,
+        "discount_total": discount_total,
         "paid_total": paid_total,
         "cash_sales_total": cash_sales_total,
         "card_sales_total": card_sales_total,
@@ -248,6 +301,8 @@ def get_cashier_daily_closing(
         "deposit_total": deposit_total,
         "cash_deposit_total": cash_deposit_total,
         "deposit_mode_totals": deposit_mode_totals,
+        "available_till_balance": available_till_balance,
+        "till_available_balance": till_available_balance,
         "expected_cash": expected_cash,
         "invoices": invoices,
         "payment_entries": payment_entries,
