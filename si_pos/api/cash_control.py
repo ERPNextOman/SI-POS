@@ -41,7 +41,7 @@ def _get_party_account(company: str, customer: str) -> str:
     if not account:
         account = frappe.db.get_value("Company", company, "default_receivable_account")
     if not account:
-        frappe.throw(_("Could not find receivable account for customer {0}." ).format(customer))
+        frappe.throw(_("Could not find receivable account for customer {0}.").format(customer))
     return account
 
 
@@ -59,24 +59,6 @@ def _get_default_bank_account(company: str) -> str | None:
         "name",
         order_by="name asc",
     )
-
-
-def _make_journal_entry(company: str, posting_date: str, accounts: list[dict[str, Any]], remarks: str | None = None):
-    if not frappe.has_permission("Journal Entry", "create"):
-        frappe.throw(_("You do not have permission to create Journal Entry."), frappe.PermissionError)
-
-    je = frappe.new_doc("Journal Entry")
-    je.voucher_type = "Journal Entry"
-    je.company = company
-    je.posting_date = posting_date
-    je.user_remark = remarks or "SI POS cash control entry"
-
-    for row in accounts:
-        je.append("accounts", row)
-
-    je.insert()
-    je.submit()
-    return je
 
 
 @frappe.whitelist()
@@ -150,7 +132,11 @@ def create_daily_expense(
     expense_account: str | None = None,
     remarks: str | None = None,
 ):
-    """Create and submit SI POS Daily Expense and linked Journal Entry."""
+    """Create SI POS Daily Expense as Draft.
+
+    Journal Entry is intentionally NOT created here. It is created only when the
+    SI POS Daily Expense document is submitted from the backend/form.
+    """
     if not frappe.has_permission("SI POS Daily Expense", "create"):
         frappe.throw(_("You do not have permission to create Daily Expense."), frappe.PermissionError)
 
@@ -168,21 +154,6 @@ def create_daily_expense(
     paid_from = _clean(paid_from) or _get_mop_account(mode_of_payment or "", company)
     expense_account = _clean(expense_account) or _get_default_expense_account(company)
 
-    if not paid_from:
-        frappe.throw(_("Please select Mode of Payment with account or Paid From account."))
-    if not expense_account:
-        frappe.throw(_("Please select Expense Account."))
-
-    je = _make_journal_entry(
-        company=company,
-        posting_date=nowdate(),
-        remarks=f"SI POS Daily Expense: {purpose}",
-        accounts=[
-            {"account": expense_account, "debit_in_account_currency": amount},
-            {"account": paid_from, "credit_in_account_currency": amount},
-        ],
-    )
-
     doc = frappe.new_doc("SI POS Daily Expense")
     doc.posting_date = nowdate()
     doc.company = company
@@ -190,14 +161,13 @@ def create_daily_expense(
     doc.warehouse = _clean(warehouse)
     doc.amount = amount
     doc.mode_of_payment = _clean(mode_of_payment)
+    doc.paid_from = paid_from
     doc.expense_account = expense_account
     doc.purpose = purpose
     doc.remarks = _clean(remarks)
-    doc.journal_entry = je.name
     doc.insert()
-    doc.submit()
 
-    return {"name": doc.name, "journal_entry": je.name, "amount": amount, "route": f"/app/si-pos-daily-expense/{doc.name}"}
+    return {"name": doc.name, "journal_entry": None, "amount": amount, "route": f"/app/si-pos-daily-expense/{doc.name}"}
 
 
 @frappe.whitelist()
@@ -212,7 +182,11 @@ def create_bank_deposit(
     reference_no: str | None = None,
     remarks: str | None = None,
 ):
-    """Create and submit SI POS Bank Deposit and linked Journal Entry."""
+    """Create SI POS Bank Deposit as Draft.
+
+    Journal Entry is intentionally NOT created here. It is created only when the
+    SI POS Bank Deposit document is submitted from the backend/form.
+    """
     if not frappe.has_permission("SI POS Bank Deposit", "create"):
         frappe.throw(_("You do not have permission to create Bank Deposit."), frappe.PermissionError)
 
@@ -229,20 +203,6 @@ def create_bank_deposit(
 
     from_account = _clean(from_account) or _get_mop_account(from_mode_of_payment or "", company)
     bank_account = _clean(bank_account) or _get_default_bank_account(company)
-    if not from_account:
-        frappe.throw(_("Please select From Mode of Payment with account or From Account."))
-    if not bank_account:
-        frappe.throw(_("Please select Bank Account."))
-
-    je = _make_journal_entry(
-        company=company,
-        posting_date=nowdate(),
-        remarks=f"SI POS Bank Deposit to {bank_name}",
-        accounts=[
-            {"account": bank_account, "debit_in_account_currency": amount},
-            {"account": from_account, "credit_in_account_currency": amount},
-        ],
-    )
 
     doc = frappe.new_doc("SI POS Bank Deposit")
     doc.posting_date = nowdate()
@@ -256,8 +216,6 @@ def create_bank_deposit(
     doc.bank_account = bank_account
     doc.reference_no = _clean(reference_no)
     doc.remarks = _clean(remarks)
-    doc.journal_entry = je.name
     doc.insert()
-    doc.submit()
 
-    return {"name": doc.name, "journal_entry": je.name, "amount": amount, "route": f"/app/si-pos-bank-deposit/{doc.name}"}
+    return {"name": doc.name, "journal_entry": None, "amount": amount, "route": f"/app/si-pos-bank-deposit/{doc.name}"}
