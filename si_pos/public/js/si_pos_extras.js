@@ -1,6 +1,6 @@
 (function () {
     const WAIT_MS = 700;
-    const MAX_TRIES = 60;
+    const MAX_TRIES = 80;
 
     function is_si_pos_page() {
         return window.location.pathname.includes('/app/si-pos');
@@ -31,6 +31,10 @@
         };
     }
 
+    function button_html(cls, label) {
+        return `<button class="btn btn-light ${cls}" style="height:32px; border-radius:9px; font-weight:900;">${label}</button>`;
+    }
+
     function hide_top_vat_text() {
         if (!is_si_pos_page()) return;
         if (!document.getElementById('si-pos-hide-vat-subtitle-style')) {
@@ -44,24 +48,45 @@
         $('.si-pos-sub').hide();
     }
 
+    function ensure_control_buttons() {
+        if (!is_si_pos_page()) return;
+        let controls = $('.si-pos-extra-controls');
+        if (!controls.length) return;
+
+        controls.css({
+            marginTop: '8px',
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            flexWrap: 'wrap'
+        });
+
+        // Remove old print format UI if it exists from cached/older builds.
+        controls.find('.si-extra-print-format').closest('div').remove();
+
+        if (!controls.find('.si-extra-customer-btn').length) controls.append(button_html('si-extra-customer-btn', '+ Customer'));
+        if (!controls.find('.si-extra-invoices-btn').length) controls.append(button_html('si-extra-invoices-btn', 'Sales Invoices'));
+        if (!controls.find('.si-extra-stock-btn').length) controls.append(button_html('si-extra-stock-btn', 'Available Stock'));
+        if (!controls.find('.si-extra-closing-btn').length) controls.append(button_html('si-extra-closing-btn', 'Daily Closing'));
+
+        bind_extra_events();
+    }
+
     function add_controls() {
         if (!is_si_pos_page()) return;
-        if ($('.si-pos-extra-controls').length) return;
         if (!$('.si-pos-head').length) return;
 
         hide_top_vat_text();
 
-        $('.si-pos-head').append(`
-            <div class="si-pos-extra-controls" style="margin-top:8px; display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap;">
-                <button class="btn btn-light si-extra-customer-btn" style="height:32px; border-radius:9px; font-weight:900;">+ Customer</button>
-                <button class="btn btn-light si-extra-invoices-btn" style="height:32px; border-radius:9px; font-weight:900;">Sales Invoices</button>
-                <button class="btn btn-light si-extra-stock-btn" style="height:32px; border-radius:9px; font-weight:900;">Available Stock</button>
-                <button class="btn btn-light si-extra-closing-btn" style="height:32px; border-radius:9px; font-weight:900;">Daily Closing</button>
-            </div>
-        `);
+        if (!$('.si-pos-extra-controls').length) {
+            $('.si-pos-head').append(`
+                <div class="si-pos-extra-controls" style="margin-top:8px; display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap;"></div>
+            `);
+        }
 
+        ensure_control_buttons();
         load_pos_config();
-        bind_extra_events();
     }
 
     async function load_pos_config() {
@@ -323,9 +348,10 @@
             install_instance_marker();
             hide_top_vat_text();
             add_controls();
+            ensure_control_buttons();
             patch_print_behavior();
             tries += 1;
-            if (tries >= MAX_TRIES || ($('.si-pos-extra-controls').length && get_pos_instance())) {
+            if (tries >= MAX_TRIES || ($('.si-extra-invoices-btn').length && $('.si-extra-stock-btn').length && get_pos_instance())) {
                 clearInterval(timer);
             }
         }, WAIT_MS);
