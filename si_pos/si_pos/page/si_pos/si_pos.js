@@ -1,10 +1,11 @@
 frappe.pages["si-pos"].on_page_load = function (wrapper) {
     const page = frappe.ui.make_app_page({
         parent: wrapper,
-        title: "SI POS",
+        title: "",
         single_column: true,
     });
 
+    if (page.set_title) page.set_title("");
     new SIPOSPage(page);
 };
 
@@ -19,59 +20,93 @@ class SIPOSPage {
         this.preview_timer = null;
         this.created_invoice = null;
         this.preview = null;
+        this.prepare_page_layout();
         this.make();
         this.load_defaults();
+    }
+
+    prepare_page_layout() {
+        const $page_container = this.wrapper.closest(".page-container");
+        const $main_wrapper = this.wrapper.closest(".layout-main-section-wrapper");
+        const $main_section = this.wrapper.closest(".layout-main-section");
+
+        $page_container.addClass("si-pos-full-page");
+        $main_wrapper.css({ "max-width": "none", "width": "100%", "padding": "0" });
+        $main_section.css({ "max-width": "none", "width": "100%" });
+
+        if (!document.getElementById("si-pos-desk-layout-style")) {
+            $("head").append(`
+                <style id="si-pos-desk-layout-style">
+                    .si-pos-full-page .page-head,
+                    .si-pos-full-page .page-title,
+                    .si-pos-full-page .page-title-area,
+                    .si-pos-full-page .standard-actions,
+                    .si-pos-full-page .custom-actions { display: none !important; }
+                    .si-pos-full-page .page-content { padding: 0 8px 8px 8px !important; }
+                    .si-pos-full-page .layout-main-section-wrapper,
+                    .si-pos-full-page .layout-main-section,
+                    .si-pos-full-page .container,
+                    .si-pos-full-page .page-body { max-width: none !important; width: 100% !important; }
+                    .si-pos-full-page .layout-main-section { padding: 0 !important; }
+                </style>
+            `);
+        }
     }
 
     make() {
         this.wrapper.html(`
             <style>
-                .si-pos-wrap { background: linear-gradient(135deg,#eef2ff,#fdf2f8,#ecfeff); min-height: calc(100vh - 120px); padding: 18px; border-radius: 18px; }
-                .si-pos-head { background: linear-gradient(90deg,#4338ca,#7c3aed,#db2777); color:#fff; border-radius:24px; padding:22px; margin-bottom:18px; box-shadow:0 16px 34px rgba(79,70,229,.22); }
-                .si-pos-title { font-size:26px; font-weight:900; margin:0; }
-                .si-pos-sub { opacity:.88; margin-top:4px; }
-                .si-pos-grid { display:grid; grid-template-columns:1.35fr .85fr; gap:18px; }
-                .si-card { background:#fff; border-radius:22px; padding:18px; box-shadow:0 10px 24px rgba(15,23,42,.08); border:1px solid rgba(226,232,240,.8); }
-                .si-field-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-                .si-search-row { display:flex; gap:10px; align-items:end; }
+                .si-pos-wrap { background: linear-gradient(135deg,#eef2ff,#fdf2f8,#ecfeff); min-height: calc(100vh - 72px); padding: 10px; border-radius: 14px; }
+                .si-pos-head { background: linear-gradient(90deg,#4338ca,#7c3aed,#db2777); color:#fff; border-radius:18px; padding:14px 18px; margin-bottom:10px; box-shadow:0 10px 24px rgba(79,70,229,.18); }
+                .si-pos-title { font-size:22px; font-weight:900; margin:0; letter-spacing:.5px; }
+                .si-pos-sub { opacity:.88; margin-top:3px; font-size:13px; }
+                .si-pos-grid { display:grid; grid-template-columns:1.18fr .82fr; gap:12px; align-items:start; }
+                .si-card { background:#fff; border-radius:18px; padding:12px; box-shadow:0 8px 18px rgba(15,23,42,.06); border:1px solid rgba(226,232,240,.85); }
+                .si-field-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+                .si-field-grid .form-group, .si-search .form-group { margin-bottom:0 !important; }
+                .si-field-grid .control-label, .si-search .control-label { font-size:12px; margin-bottom:4px; }
+                .si-field-grid input, .si-field-grid .form-control, .si-search input { min-height:32px !important; height:32px !important; padding:5px 10px !important; border-radius:9px !important; }
+                .si-search-row { display:flex; gap:8px; align-items:end; }
                 .si-search-row .form-group { margin-bottom:0; flex:1; }
-                .si-results { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
-                .si-item { cursor:pointer; overflow:hidden; border-radius:20px; border:1px solid #e2e8f0; background:#fff; transition:.15s ease; }
-                .si-item:hover { transform:translateY(-2px); box-shadow:0 12px 24px rgba(15,23,42,.12); }
-                .si-item-top { padding:16px; color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1); min-height:104px; }
+                .si-search-btn { height:32px; padding:5px 14px !important; border-radius:9px !important; background:#020617 !important; border-color:#020617 !important; }
+                .si-results { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:10px; }
+                .si-item { cursor:pointer; overflow:hidden; border-radius:14px; border:1px solid #e2e8f0; background:#fff; transition:.15s ease; }
+                .si-item:hover { transform:translateY(-1px); box-shadow:0 10px 20px rgba(15,23,42,.10); }
+                .si-item-top { padding:12px; color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1); min-height:76px; }
                 .si-item:nth-child(2n) .si-item-top { background:linear-gradient(135deg,#ec4899,#f97316); }
                 .si-item:nth-child(3n) .si-item-top { background:linear-gradient(135deg,#10b981,#14b8a6); }
-                .si-item-code { font-size:11px; opacity:.88; font-weight:800; }
-                .si-item-name { margin-top:20px; font-size:16px; line-height:1.2; font-weight:900; }
-                .si-item-bottom { padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
-                .si-price { font-weight:900; color:#0f172a; }
-                .si-tag { font-size:11px; padding:4px 8px; border-radius:999px; background:#f1f5f9; color:#475569; font-weight:800; }
-                .si-cart { background:#020617; color:#fff; border-radius:24px; padding:18px; box-shadow:0 18px 36px rgba(2,6,23,.22); }
-                .si-cart-title { font-size:22px; font-weight:900; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; }
-                .si-pill { background:#10b981; color:#fff; border-radius:999px; padding:6px 10px; font-size:11px; font-weight:900; }
-                .si-cart-row { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:12px; margin-bottom:10px; }
-                .si-cart-line { display:grid; grid-template-columns:1fr 70px 78px 28px; gap:8px; align-items:center; }
-                .si-cart-name { font-weight:850; }
-                .si-cart-code { font-size:11px; color:#94a3b8; margin-top:3px; }
-                .si-cart input, .si-payment-box input, .si-discount-box input { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:10px; padding:7px; width:100%; }
-                .si-remove { border:0; background:#ef4444; color:#fff; border-radius:10px; height:32px; width:32px; font-weight:900; }
-                .si-payment-box, .si-discount-box { margin-top:14px; padding:14px; border-radius:18px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
-                .si-pay-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-                .si-pay-label { font-size:11px; font-weight:900; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; }
-                .si-payment-box select { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:10px; padding:7px; width:100%; }
-                .si-totals { border-top:1px solid rgba(255,255,255,.12); margin-top:14px; padding-top:14px; }
-                .si-total-line { display:flex; justify-content:space-between; margin:8px 0; color:#cbd5e1; }
-                .si-grand { color:#86efac; font-size:26px; font-weight:950; }
-                .si-tax-note { color:#fbbf24; font-size:12px; font-weight:800; margin-top:6px; }
-                .si-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
-                .si-actions-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:10px; }
-                .si-btn { border:0; border-radius:16px; padding:13px 14px; font-weight:900; }
+                .si-item-code { font-size:10px; opacity:.9; font-weight:800; }
+                .si-item-name { margin-top:16px; font-size:14px; line-height:1.15; font-weight:900; }
+                .si-item-bottom { padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+                .si-price { font-weight:900; color:#0f172a; font-size:13px; }
+                .si-tag { font-size:10px; padding:3px 7px; border-radius:999px; background:#f1f5f9; color:#475569; font-weight:800; }
+                .si-cart { background:#020617; color:#fff; border-radius:18px; padding:12px; box-shadow:0 14px 28px rgba(2,6,23,.20); }
+                .si-cart-title { font-size:20px; font-weight:900; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
+                .si-pill { background:#10b981; color:#fff; border-radius:999px; padding:5px 10px; font-size:10px; font-weight:900; }
+                .si-cart-row { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); border-radius:13px; padding:10px; margin-bottom:8px; }
+                .si-cart-line { display:grid; grid-template-columns:1fr 64px 74px 30px; gap:7px; align-items:center; }
+                .si-cart-name { font-weight:850; font-size:13px; }
+                .si-cart-code { font-size:10px; color:#94a3b8; margin-top:2px; }
+                .si-cart input, .si-payment-box input, .si-discount-box input { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:9px; padding:6px 7px; width:100%; height:32px; }
+                .si-remove { border:0; background:#ef4444; color:#fff; border-radius:9px; height:30px; width:30px; font-weight:900; }
+                .si-payment-box, .si-discount-box { margin-top:10px; padding:10px; border-radius:14px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
+                .si-pay-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+                .si-pay-label { font-size:10px; font-weight:900; color:#cbd5e1; margin-bottom:4px; text-transform:uppercase; }
+                .si-payment-box select { background:#0f172a; border:1px solid #334155; color:#fff; border-radius:9px; padding:6px 7px; width:100%; height:32px; }
+                .si-totals { border-top:1px solid rgba(255,255,255,.12); margin-top:10px; padding-top:10px; }
+                .si-total-line { display:flex; justify-content:space-between; margin:6px 0; color:#cbd5e1; font-size:13px; }
+                .si-grand { color:#86efac; font-size:22px; font-weight:950; }
+                .si-tax-note { color:#fbbf24; font-size:11px; font-weight:800; margin-top:5px; line-height:1.3; }
+                .si-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+                .si-actions-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; }
+                .si-btn { border:0; border-radius:13px; padding:10px 10px; font-weight:900; font-size:12px; min-height:42px; }
                 .si-btn-primary { background:linear-gradient(90deg,#10b981,#14b8a6); color:#fff; }
                 .si-btn-blue { background:linear-gradient(90deg,#2563eb,#7c3aed); color:#fff; }
                 .si-btn-purple { background:linear-gradient(90deg,#9333ea,#db2777); color:#fff; }
                 .si-btn-light { background:#e2e8f0; color:#0f172a; }
-                .si-empty { padding:24px; text-align:center; color:#94a3b8; border:1px dashed #334155; border-radius:18px; }
-                @media (max-width: 1100px) { .si-pos-grid { grid-template-columns:1fr; } .si-results { grid-template-columns:repeat(2,1fr); } .si-field-grid { grid-template-columns:repeat(2,1fr); } }
+                .si-empty { padding:18px; text-align:center; color:#94a3b8; border:1px dashed #334155; border-radius:14px; }
+                @media (max-width: 1300px) { .si-results { grid-template-columns:repeat(3,1fr); } }
+                @media (max-width: 1100px) { .si-pos-grid { grid-template-columns:1fr; } .si-results { grid-template-columns:repeat(3,1fr); } .si-field-grid { grid-template-columns:repeat(2,1fr); } }
                 @media (max-width: 700px) { .si-results, .si-field-grid, .si-pay-grid, .si-actions, .si-actions-3 { grid-template-columns:1fr; } }
             </style>
             <div class="si-pos-wrap">
@@ -91,7 +126,7 @@ class SIPOSPage {
                             </div>
                         </div>
 
-                        <div class="si-card" style="margin-top:14px;">
+                        <div class="si-card" style="margin-top:10px;">
                             <div class="si-search-row">
                                 <div class="si-search"></div>
                                 <button class="btn btn-primary si-search-btn">Search</button>
@@ -119,7 +154,7 @@ class SIPOSPage {
                                         <input class="si-discount-amount" type="number" step="0.001" value="0">
                                     </div>
                                 </div>
-                                <div class="si-tax-note">Discount is applied on Grand Total. Amount discount has priority over %.</div>
+                                <div class="si-tax-note">Amount discount has priority over %.</div>
                             </div>
 
                             <div class="si-payment-box">
@@ -141,7 +176,7 @@ class SIPOSPage {
                                         <input class="si-card-amount" type="number" step="0.001" value="0">
                                     </div>
                                 </div>
-                                <div class="si-total-line" style="margin-top:10px;"><span>Paid</span><span class="si-paid-total">OMR 0.000</span></div>
+                                <div class="si-total-line" style="margin-top:8px;"><span>Paid</span><span class="si-paid-total">OMR 0.000</span></div>
                                 <div class="si-total-line"><span>Balance</span><span class="si-balance-total">OMR 0.000</span></div>
                             </div>
 
@@ -345,7 +380,7 @@ class SIPOSPage {
                     <input class="si-rate" type="number" step="0.001" value="${flt(row.rate)}">
                     <button class="si-remove">×</button>
                 </div>
-                <div style="text-align:right; margin-top:8px; font-weight:900; color:#86efac;">${this.format_currency(flt(row.qty) * flt(row.rate))}</div>
+                <div style="text-align:right; margin-top:6px; font-weight:900; color:#86efac; font-size:13px;">${this.format_currency(flt(row.qty) * flt(row.rate))}</div>
             </div>`).join(""));
 
         const total_qty = this.cart.reduce((sum, row) => sum + flt(row.qty), 0);
@@ -415,9 +450,6 @@ class SIPOSPage {
     async submit_pay_and_print() {
         if (!this.validate_before_action()) return;
         await this.preview_totals();
-
-        // Always auto-match cash/card to the final payable total before submit.
-        // This prevents the blocking popup when the user enters less than payable.
         this.fill_cash_balance();
 
         const payable = this.get_payable_total();
