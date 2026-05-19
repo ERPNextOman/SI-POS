@@ -1,0 +1,157 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-05-19 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "section_defaults",
+    "default_company",
+    "default_customer",
+    "default_price_list",
+    "default_warehouse",
+    "section_payments",
+    "default_cash_mode",
+    "default_card_mode",
+    "section_tax",
+    "vat_rate",
+    "vat_inclusive",
+    "section_printing",
+    "default_print_format",
+    "auto_print",
+    "auto_clear_cart",
+    "section_advanced",
+    "enabled"
+  ],
+  "fields": [
+    {
+      "fieldname": "section_defaults",
+      "fieldtype": "Section Break",
+      "label": "Default Values"
+    },
+    {
+      "fieldname": "default_company",
+      "fieldtype": "Link",
+      "label": "Default Company",
+      "options": "Company"
+    },
+    {
+      "fieldname": "default_customer",
+      "fieldtype": "Link",
+      "label": "Default Customer",
+      "options": "Customer"
+    },
+    {
+      "fieldname": "default_price_list",
+      "fieldtype": "Link",
+      "label": "Default Price List",
+      "options": "Price List"
+    },
+    {
+      "fieldname": "default_warehouse",
+      "fieldtype": "Link",
+      "label": "Default Warehouse",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "section_payments",
+      "fieldtype": "Section Break",
+      "label": "Payment Defaults"
+    },
+    {
+      "fieldname": "default_cash_mode",
+      "fieldtype": "Link",
+      "label": "Default Cash Mode",
+      "options": "Mode of Payment"
+    },
+    {
+      "fieldname": "default_card_mode",
+      "fieldtype": "Link",
+      "label": "Default Card Mode",
+      "options": "Mode of Payment"
+    },
+    {
+      "fieldname": "section_tax",
+      "fieldtype": "Section Break",
+      "label": "VAT Settings"
+    },
+    {
+      "default": "5",
+      "fieldname": "vat_rate",
+      "fieldtype": "Float",
+      "label": "VAT Rate %"
+    },
+    {
+      "default": "1",
+      "fieldname": "vat_inclusive",
+      "fieldtype": "Check",
+      "label": "VAT Inclusive"
+    },
+    {
+      "fieldname": "section_printing",
+      "fieldtype": "Section Break",
+      "label": "Printing"
+    },
+    {
+      "fieldname": "default_print_format",
+      "fieldtype": "Link",
+      "label": "Default Print Format",
+      "options": "Print Format"
+    },
+    {
+      "default": "1",
+      "fieldname": "auto_print",
+      "fieldtype": "Check",
+      "label": "Auto Print After Submit"
+    },
+    {
+      "default": "1",
+      "fieldname": "auto_clear_cart",
+      "fieldtype": "Check",
+      "label": "Auto Clear Cart After Submit"
+    },
+    {
+      "fieldname": "section_advanced",
+      "fieldtype": "Section Break",
+      "label": "Advanced"
+    },
+    {
+      "default": "1",
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled"
+    }
+  ],
+  "issingle": 1,
+  "links": [],
+  "modified": "2026-05-19 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "SI POS",
+  "name": "SI POS Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    },
+    {
+      "read": 1,
+      "role": "Sales Manager",
+      "write": 1
+    },
+    {
+      "read": 1,
+      "role": "Sales User"
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}
