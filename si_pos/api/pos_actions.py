@@ -16,6 +16,19 @@ def _safe_int(value: Any, default: int = 100, minimum: int = 1, maximum: int = 5
     return max(minimum, min(maximum, value))
 
 
+def _is_cash_mode(mode: str | None) -> bool:
+    mode = (mode or "").strip().lower()
+    return "cash" in mode
+
+
+def _sum_by_mode(rows: list[dict[str, Any]], mode_field: str, amount_field: str) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        mode = row.get(mode_field) or "Unspecified"
+        totals[mode] += flt(row.get(amount_field))
+    return dict(totals)
+
+
 @frappe.whitelist()
 def quick_create_customer(
     customer_name: str,
@@ -68,11 +81,7 @@ def get_cashier_daily_closing(
     company: str | None = None,
     cashier: str | None = None,
 ) -> dict[str, Any]:
-    """Return a cashier-wise same-day closing summary for SI POS.
-
-    The cashier is based on Sales Invoice owner by default. System Manager may
-    pass another cashier if needed.
-    """
+    """Return a cashier-wise same-day closing summary for SI POS."""
     if not frappe.has_permission("Sales Invoice", "read"):
         frappe.throw(_("You do not have permission to read Sales Invoice."), frappe.PermissionError)
 
@@ -102,6 +111,7 @@ def get_cashier_daily_closing(
             "rounded_total",
             "outstanding_amount",
             "posting_time",
+            "is_return",
         ],
         order_by="creation asc",
         limit_page_length=1000,
@@ -134,12 +144,87 @@ def get_cashier_daily_closing(
             mode_totals[pe.mode_of_payment or "Unspecified"] += flt(pe.paid_amount)
 
     invoice_total = 0.0
+    sales_total = 0.0
+    return_total = 0.0
     outstanding_total = 0.0
     for row in invoices:
-        invoice_total += flt(row.rounded_total or row.grand_total)
+        value = flt(row.rounded_total or row.grand_total)
+        invoice_total += value
+        if row.get("is_return"):
+            return_total += abs(value)
+        else:
+            sales_total += value
         outstanding_total += flt(row.outstanding_amount)
 
     paid_total = sum(mode_totals.values())
+    cash_sales_total = sum(amount for mode, amount in mode_totals.items() if _is_cash_mode(mode))
+    card_sales_total = paid_total - cash_sales_total
+
+    advance_filters = {
+        "docstatus": 1,
+        "posting_date": posting_date,
+        "owner": cashier,
+        "payment_type": "Receive",
+        "party_type": "Customer",
+    }
+    if company:
+        advance_filters["company"] = company
+
+    all_receive_entries = frappe.get_all(
+        "Payment Entry",
+        filters=advance_filters,
+        fields=["name", "party", "mode_of_payment", "paid_amount", "remarks", "creation"],
+        order_by="creation asc",
+        limit_page_length=1000,
+    )
+
+    invoice_payment_names = {row.name for row in payment_entries}
+    advances = [row for row in all_receive_entries if row.name not in invoice_payment_names]
+    advance_mode_totals = _sum_by_mode(advances, "mode_of_payment", "paid_amount")
+    advance_total = sum(advance_mode_totals.values())
+    cash_advance_total = sum(amount for mode, amount in advance_mode_totals.items() if _is_cash_mode(mode))
+
+    expense_filters = {
+        "docstatus": 1,
+        "posting_date": posting_date,
+        "cashier": cashier,
+    }
+    if company:
+        expense_filters["company"] = company
+
+    expenses = frappe.get_all(
+        "SI POS Daily Expense",
+        filters=expense_filters,
+        fields=["name", "purpose", "amount", "mode_of_payment", "journal_entry", "creation"],
+        order_by="creation asc",
+        limit_page_length=1000,
+    ) if frappe.db.exists("DocType", "SI POS Daily Expense") else []
+
+    expense_mode_totals = _sum_by_mode(expenses, "mode_of_payment", "amount")
+    expense_total = sum(expense_mode_totals.values())
+    cash_expense_total = sum(amount for mode, amount in expense_mode_totals.items() if _is_cash_mode(mode))
+
+    deposit_filters = {
+        "docstatus": 1,
+        "posting_date": posting_date,
+        "cashier": cashier,
+    }
+    if company:
+        deposit_filters["company"] = company
+
+    deposits = frappe.get_all(
+        "SI POS Bank Deposit",
+        filters=deposit_filters,
+        fields=["name", "bank_name", "amount", "from_mode_of_payment", "journal_entry", "creation"],
+        order_by="creation asc",
+        limit_page_length=1000,
+    ) if frappe.db.exists("DocType", "SI POS Bank Deposit") else []
+
+    deposit_mode_totals = _sum_by_mode(deposits, "from_mode_of_payment", "amount")
+    deposit_total = sum(deposit_mode_totals.values())
+    cash_deposit_total = sum(amount for mode, amount in deposit_mode_totals.items() if _is_cash_mode(mode))
+
+    expected_cash = cash_sales_total + cash_advance_total - cash_expense_total - cash_deposit_total
 
     return {
         "posting_date": str(posting_date),
@@ -147,11 +232,28 @@ def get_cashier_daily_closing(
         "cashier": cashier,
         "invoice_count": len(invoices),
         "invoice_total": invoice_total,
+        "sales_total": sales_total,
+        "return_total": return_total,
         "paid_total": paid_total,
+        "cash_sales_total": cash_sales_total,
+        "card_sales_total": card_sales_total,
         "outstanding_total": outstanding_total,
         "mode_totals": dict(mode_totals),
+        "advance_total": advance_total,
+        "cash_advance_total": cash_advance_total,
+        "advance_mode_totals": advance_mode_totals,
+        "expense_total": expense_total,
+        "cash_expense_total": cash_expense_total,
+        "expense_mode_totals": expense_mode_totals,
+        "deposit_total": deposit_total,
+        "cash_deposit_total": cash_deposit_total,
+        "deposit_mode_totals": deposit_mode_totals,
+        "expected_cash": expected_cash,
         "invoices": invoices,
         "payment_entries": payment_entries,
+        "advances": advances,
+        "expenses": expenses,
+        "deposits": deposits,
     }
 
 
@@ -162,11 +264,7 @@ def get_created_sales_invoices(
     posting_date: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Return Sales Invoices created by the current cashier/user.
-
-    This is meant for the SI POS quick view button. System Manager can later be
-    extended to view all cashiers, but normal users see their own invoices.
-    """
+    """Return Sales Invoices created by the current cashier/user."""
     if not frappe.has_permission("Sales Invoice", "read"):
         frappe.throw(_("You do not have permission to read Sales Invoice."), frappe.PermissionError)
 
