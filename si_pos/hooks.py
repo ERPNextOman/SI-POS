@@ -17,5 +17,6 @@ app_include_js = [
     "/assets/si_pos/js/si_pos_print_patch.js",
     "/assets/si_pos/js/si_pos_phase4.js",
     "/assets/si_pos/js/si_pos_scan_compact_v1.js",
+    "/assets/si_pos/js/si_pos_stock_items_v1.js",
     "/assets/si_pos/js/si_pos_phase5.js",
 ]
