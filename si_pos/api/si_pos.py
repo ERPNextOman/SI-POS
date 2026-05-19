@@ -17,10 +17,12 @@ DEFAULT_SEARCH_FIELDS = [
     "custom_vehicle",
 ]
 
-
 COMMON_CASH_NAMES = ["Cash", "Cash Payment"]
 COMMON_CARD_NAMES = ["Card", "Credit Card", "Debit Card", "Bank Card"]
 COMMON_BANK_NAMES = ["Bank Transfer", "Bank", "Online Transfer", "Wire Transfer"]
+
+VAT_RATE = 5.0
+VAT_DESCRIPTION = "VAT 5% Included"
 
 
 def _parse_json(value: Any) -> Any:
@@ -141,12 +143,144 @@ def _validate_header(customer: str, company: str | None) -> tuple[str, str]:
     return customer, company
 
 
+def _get_inclusive_vat_template_rows(company: str) -> list[dict[str, Any]]:
+    rows = frappe.db.sql(
+        """
+        SELECT
+            stct.name AS template,
+            stc.charge_type,
+            stc.account_head,
+            stc.description,
+            stc.rate,
+            stc.included_in_print_rate,
+            stc.cost_center
+        FROM `tabSales Taxes and Charges Template` stct
+        INNER JOIN `tabSales Taxes and Charges` stc ON stc.parent = stct.name
+        WHERE ifnull(stct.disabled, 0) = 0
+          AND (stct.company = %(company)s OR ifnull(stct.company, '') = '')
+          AND stc.charge_type = 'On Net Total'
+          AND ifnull(stc.included_in_print_rate, 0) = 1
+          AND ABS(ifnull(stc.rate, 0) - %(vat_rate)s) < 0.0001
+        ORDER BY ifnull(stct.is_default, 0) DESC, stct.modified DESC, stc.idx ASC
+        LIMIT 5
+        """,
+        {"company": company, "vat_rate": VAT_RATE},
+        as_dict=True,
+    )
+
+    if not rows:
+        return []
+
+    template = rows[0].template
+    return [row for row in rows if row.template == template]
+
+
+def _get_default_vat_account(company: str) -> str:
+    account = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabAccount`
+        WHERE company = %(company)s
+          AND is_group = 0
+          AND (
+                LOWER(account_name) LIKE '%%output%%vat%%'
+             OR LOWER(name) LIKE '%%output%%vat%%'
+             OR LOWER(account_name) LIKE '%%vat%%output%%'
+             OR LOWER(name) LIKE '%%vat%%output%%'
+             OR LOWER(account_name) LIKE '%%sales%%tax%%'
+             OR LOWER(name) LIKE '%%sales%%tax%%'
+             OR LOWER(account_name) LIKE '%%vat%%'
+             OR LOWER(name) LIKE '%%vat%%'
+             OR account_type = 'Tax'
+          )
+        ORDER BY
+            CASE
+                WHEN LOWER(account_name) LIKE '%%output%%vat%%' OR LOWER(name) LIKE '%%output%%vat%%' THEN 0
+                WHEN LOWER(account_name) LIKE '%%vat%%output%%' OR LOWER(name) LIKE '%%vat%%output%%' THEN 1
+                WHEN LOWER(account_name) LIKE '%%sales%%tax%%' OR LOWER(name) LIKE '%%sales%%tax%%' THEN 2
+                WHEN LOWER(account_name) LIKE '%%vat%%' OR LOWER(name) LIKE '%%vat%%' THEN 3
+                ELSE 4
+            END,
+            name ASC
+        LIMIT 1
+        """,
+        {"company": company},
+        as_dict=True,
+    )
+
+    if account:
+        return account[0].name
+
+    frappe.throw(
+        _(
+            "Could not find a VAT account for company {0}. Please create an Output VAT / Sales Tax account or an inclusive 5% Sales Taxes and Charges Template."
+        ).format(company)
+    )
+
+
+def _apply_inclusive_vat(invoice, company: str) -> None:
+    """Add fixed 5% inclusive VAT.
+
+    Item rates in SI POS are treated as VAT-inclusive. Example: rate 100 means
+    customer pays 100 and VAT is extracted from that amount.
+    """
+    invoice.set("taxes", [])
+
+    template_rows = _get_inclusive_vat_template_rows(company)
+    if template_rows:
+        invoice.taxes_and_charges = template_rows[0].template
+        for row in template_rows:
+            invoice.append(
+                "taxes",
+                {
+                    "charge_type": row.charge_type,
+                    "account_head": row.account_head,
+                    "description": row.description or VAT_DESCRIPTION,
+                    "rate": row.rate or VAT_RATE,
+                    "included_in_print_rate": 1,
+                    "cost_center": row.cost_center,
+                },
+            )
+        return
+
+    vat_account = _get_default_vat_account(company)
+    invoice.append(
+        "taxes",
+        {
+            "charge_type": "On Net Total",
+            "account_head": vat_account,
+            "description": VAT_DESCRIPTION,
+            "rate": VAT_RATE,
+            "included_in_print_rate": 1,
+        },
+    )
+
+
+def _apply_discount(invoice, discount_percentage: Any = 0, discount_amount: Any = 0) -> None:
+    discount_percentage = _safe_float(discount_percentage, 0)
+    discount_amount = _safe_float(discount_amount, 0)
+
+    if discount_amount < 0 or discount_percentage < 0:
+        frappe.throw(_("Discount cannot be negative."))
+
+    if discount_amount > 0:
+        invoice.apply_discount_on = "Grand Total"
+        invoice.discount_amount = discount_amount
+        invoice.additional_discount_percentage = 0
+    elif discount_percentage > 0:
+        invoice.apply_discount_on = "Grand Total"
+        invoice.additional_discount_percentage = discount_percentage
+        invoice.discount_amount = 0
+
+
 def _build_sales_invoice(
     customer: str,
     items: str | list[dict[str, Any]],
     company: str | None = None,
     price_list: str | None = None,
     set_warehouse: str | None = None,
+    discount_percentage: Any = 0,
+    discount_amount: Any = 0,
 ):
     customer, company = _validate_header(customer, company)
     price_list = _get_default_price_list(price_list)
@@ -185,6 +319,8 @@ def _build_sales_invoice(
             item_row["uom"] = uom
         invoice.append("items", item_row)
 
+    _apply_inclusive_vat(invoice, company)
+    _apply_discount(invoice, discount_percentage=discount_percentage, discount_amount=discount_amount)
     return invoice
 
 
@@ -197,6 +333,42 @@ def _calculate_invoice(invoice) -> None:
 def _invoice_total(invoice) -> float:
     total = invoice.get("rounded_total") or invoice.get("grand_total") or 0
     return flt(total, invoice.precision("grand_total") or 3)
+
+
+def _tax_rows(invoice) -> list[dict[str, Any]]:
+    rows = []
+    for tax in invoice.get("taxes", []):
+        rows.append(
+            {
+                "description": tax.description,
+                "account_head": tax.account_head,
+                "rate": tax.rate,
+                "tax_amount": tax.tax_amount,
+                "total": tax.total,
+                "included_in_print_rate": tax.included_in_print_rate,
+            }
+        )
+    return rows
+
+
+def _preview_response(invoice) -> dict[str, Any]:
+    precision = invoice.precision("grand_total") or 3
+    rounded_total = invoice.get("rounded_total") or invoice.get("grand_total") or 0
+    grand_total = invoice.get("grand_total") or 0
+    return {
+        "currency": invoice.currency,
+        "total_qty": invoice.total_qty,
+        "net_total": flt(invoice.net_total, precision),
+        "total": flt(invoice.total, precision),
+        "discount_amount": flt(invoice.discount_amount, precision),
+        "additional_discount_percentage": flt(invoice.additional_discount_percentage, 3),
+        "total_taxes_and_charges": flt(invoice.total_taxes_and_charges, precision),
+        "grand_total": flt(grand_total, precision),
+        "rounded_total": flt(rounded_total, precision),
+        "rounding_adjustment": flt(rounded_total - grand_total, precision),
+        "payable_total": flt(rounded_total, precision),
+        "taxes": _tax_rows(invoice),
+    }
 
 
 def _invoice_response(invoice, payment_entries: list[str] | None = None) -> dict[str, Any]:
@@ -270,11 +442,6 @@ def _normalise_payments(payments: str | list[dict[str, Any]], company: str) -> l
 
 
 def _create_payment_entries(invoice, payments: list[dict[str, Any]]) -> list[str]:
-    """Create one submitted Payment Entry per payment row.
-
-    This intentionally does not use Sales Invoice POS payment rows. The user wants
-    actual Payment Entry documents for Cash/Card/Mixed payments.
-    """
     if not frappe.has_permission("Payment Entry", "create"):
         frappe.throw(_("You do not have permission to create Payment Entry."), frappe.PermissionError)
 
@@ -353,6 +520,8 @@ def get_defaults() -> dict[str, Any]:
         "company": company,
         "price_list": _get_default_price_list(),
         "currency": frappe.defaults.get_global_default("currency") or "OMR",
+        "vat_rate": VAT_RATE,
+        "vat_inclusive": 1,
         "payment_modes": modes,
         "cash_mode": _pick_mode(modes, COMMON_CASH_NAMES, "Cash"),
         "card_mode": _pick_mode(modes, COMMON_CARD_NAMES, "Card"),
@@ -501,17 +670,53 @@ def get_item_details(
 
 
 @frappe.whitelist()
+def preview_sales_invoice(
+    customer: str,
+    items: str | list[dict[str, Any]],
+    company: str | None = None,
+    price_list: str | None = None,
+    set_warehouse: str | None = None,
+    discount_percentage: Any = 0,
+    discount_amount: Any = 0,
+) -> dict[str, Any]:
+    if not frappe.has_permission("Sales Invoice", "create"):
+        frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
+
+    invoice = _build_sales_invoice(
+        customer,
+        items,
+        company,
+        price_list,
+        set_warehouse,
+        discount_percentage=discount_percentage,
+        discount_amount=discount_amount,
+    )
+    _calculate_invoice(invoice)
+    return _preview_response(invoice)
+
+
+@frappe.whitelist()
 def create_sales_invoice(
     customer: str,
     items: str | list[dict[str, Any]],
     company: str | None = None,
     price_list: str | None = None,
     set_warehouse: str | None = None,
+    discount_percentage: Any = 0,
+    discount_amount: Any = 0,
 ) -> dict[str, Any]:
     if not frappe.has_permission("Sales Invoice", "create"):
         frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
 
-    invoice = _build_sales_invoice(customer, items, company, price_list, set_warehouse)
+    invoice = _build_sales_invoice(
+        customer,
+        items,
+        company,
+        price_list,
+        set_warehouse,
+        discount_percentage=discount_percentage,
+        discount_amount=discount_amount,
+    )
     invoice.insert()
     return _invoice_response(invoice)
 
@@ -523,12 +728,21 @@ def create_and_submit_sales_invoice(
     company: str | None = None,
     price_list: str | None = None,
     set_warehouse: str | None = None,
+    discount_percentage: Any = 0,
+    discount_amount: Any = 0,
 ) -> dict[str, Any]:
-    """Create and submit a Sales Invoice without payment. Useful for credit / pay-later sales."""
     if not frappe.has_permission("Sales Invoice", "create"):
         frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
 
-    invoice = _build_sales_invoice(customer, items, company, price_list, set_warehouse)
+    invoice = _build_sales_invoice(
+        customer,
+        items,
+        company,
+        price_list,
+        set_warehouse,
+        discount_percentage=discount_percentage,
+        discount_amount=discount_amount,
+    )
     invoice.insert()
     invoice.submit()
     return _invoice_response(invoice)
@@ -542,17 +756,22 @@ def create_paid_sales_invoice(
     company: str | None = None,
     price_list: str | None = None,
     set_warehouse: str | None = None,
+    discount_percentage: Any = 0,
+    discount_amount: Any = 0,
 ) -> dict[str, Any]:
-    """Create a submitted Sales Invoice and real Payment Entry document(s).
-
-    Payments can contain one or many rows:
-    [{"mode_of_payment": "Cash", "amount": 10.0}]
-    """
     if not frappe.has_permission("Sales Invoice", "create"):
         frappe.throw(_("You do not have permission to create Sales Invoice."), frappe.PermissionError)
 
     customer, company = _validate_header(customer, company)
-    invoice = _build_sales_invoice(customer, items, company, price_list, set_warehouse)
+    invoice = _build_sales_invoice(
+        customer,
+        items,
+        company,
+        price_list,
+        set_warehouse,
+        discount_percentage=discount_percentage,
+        discount_amount=discount_amount,
+    )
 
     _calculate_invoice(invoice)
     target_total = _invoice_total(invoice)
